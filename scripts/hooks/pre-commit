@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# 预提交闸（轻量，不替代 verify-cut 双闸）——启用方式见 scripts/hooks/install.sh。
+# 三件事:
+#   1. 私钥/证书拦截: 文件名形态（*.pem/*.key/id_rsa…）与内容形态（PEM 甲胄头，
+#      即 BEGIN 行带前后短划）都不准入库——本项目的安全身份是「绝不泄漏私钥」
+#      （AGENTS.md 硬约束 3），这是唯一一道拦着把密钥提交进仓库的门，
+#      扫描器的所有自检都管不了人手抖。
+#      注意 pattern 刻意要求完整甲胄：tests.rs 里的检测针串是裸词
+#      （"BEGIN OPENSSH PRIVATE KEY"），真实密钥才有前后短划，收紧才不误伤。
+#   2. 暂存 .sh 语法预检（bash -n），低级错误不过夜。
+#   3. 内环验证（scripts/verify.sh --quick）。
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# ── 1. 私钥/证书拦截 ──────────────────────────────────────────
+forbidden=0
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  case "$f" in
+    *.pem|*.key|*.p12|*.pfx|*.jks|*.keystore|id_rsa|id_dsa|id_ecdsa|id_ed25519|*.dump.bin)
+      echo "[pre-commit] 禁止入库（私钥/证书文件，硬约束 3）: $f" >&2
+      forbidden=1
+      continue ;;
+  esac
+  # 内容闸：暂存内容前 64KB 出现 PEM 甲胄头即拒（-a 防二进制被 grep 跳过）
+  if [[ -f "$f" ]] && git show ":$f" 2>/dev/null | head -c 65536 | grep -aqE '\-\-\-\-\-BEGIN [A-Z ]*PRIVATE KEY\-\-\-\-\-'; then
+    echo "[pre-commit] 禁止入库（内容含私钥甲胄头，硬约束 3）: $f" >&2
+    forbidden=1
+  fi
+done < <(git diff --cached --name-only --diff-filter=ACM)
+
+if [[ $forbidden -eq 1 ]]; then
+  echo "[pre-commit] 提交被拒: 先从暂存区移除（git restore --staged <file>）" >&2
+  exit 1
+fi
+
+# ── 2. 暂存 shell 脚本语法预检 ───────────────────────────────
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  [[ -f "$f" ]] || continue # 已删除的文件跳过
+  if ! bash -n "$f"; then
+    echo "[pre-commit] 提交被拒: $f 语法错误（bash -n）" >&2
+    exit 1
+  fi
+done < <(git diff --cached --name-only --diff-filter=ACM | grep -E '\.sh$' || true)
+
+# ── 3. 内环 ──────────────────────────────────────────────────
+# 纯文档提交跳过内环：fmt/clippy/vue-tsc 验的是代码与类型，.md 改不坏它们。
+# 登记刀、回填 commit 号、改 AGENTS/backlog 这类流程 commit 每刀至少两个，
+# 每个省 10 秒是小事，省的是「为纯 docs 改动等一轮构建」的固定税。
+# 任何非 .md 文件入暂存（含 scripts/、配置）都照常全跑。
+staged="$(git diff --cached --name-only --diff-filter=ACM)"
+if [[ -n "$staged" ]] && ! grep -qvE '\.md$' <<<"$staged"; then
+  echo "[pre-commit] 纯文档提交，跳过内环（私钥/语法两道闸已过）"
+  exit 0
+fi
+exec "$ROOT/scripts/verify.sh" --quick

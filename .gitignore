@@ -1,0 +1,48 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# WorkBuddy 本地数据（记忆/缓存），不上传
+.workbuddy/
+# 本地工具运行时生成的设置，不上传
+.arts/
+# 其它 AI 编码工具的本地工作目录（记忆/配置/锁）。它们各自带的嵌套 .gitignore
+# 只能管自己当下写的文件，根上再兜一层，免得工具换版后多出来的文件被 add -A 带进去
+.codeartsdoer/
+.mimocode/
+.mimocode-project-id
+
+# 本机开发工作流文档：取刀清单、刀/决策的归档正文与索引、证据存档。
+# 用 `git rm --cached` 从仓库撤下但在本机保留——它们只对按刀推进的开发流程有用，
+# 对外是噪音（且 backlog 里的未修项会被当 bug 报）。缺它们不影响构建与门禁：
+# 文档门禁（scripts/check-docs.mjs）检测到不存在就跳过相关检查。
+docs/backlog.md
+docs/backlog-archive.md
+docs/archive/
+docs/evidence/
+
+# logo 的过程产物：AI 生成的候选图、备份图标与候选方案（成品在 logo/final 与 src-tauri/icons）
+logo/ai/
+logo/backup-icons/
+logo/proposal-a/

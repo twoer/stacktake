@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+<defs>
+<linearGradient id="bg" x1="140" y1="120" x2="900" y2="920" gradientUnits="userSpaceOnUse">
+<stop stop-color="#111A2C"/><stop offset="1" stop-color="#1C2A45"/>
+</linearGradient>
+<radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(300 200) rotate(48) scale(560 520)">
+<stop stop-color="#FFFFFF" stop-opacity="0.10"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+</radialGradient>
+</defs>
+<rect x="88" y="88" width="848" height="848" rx="196" fill="url(#bg)"/>
+<rect x="88" y="88" width="848" height="848" rx="196" fill="url(#glow)"/>
+
+<!-- 底层 -->
+<polygon points="266 596 512 719 512 785 266 662" fill="#A3B3CD"/>
+<polygon points="758 596 512 719 512 785 758 662" fill="#A3B3CD"/>
+<polygon points="512 473 758 596 512 719 266 596" fill="#D3DEEE"/>
+<!-- 抬起的上层 -->
+<polygon points="266 384 512 507 512 573 266 450" fill="#A3B3CD"/>
+<polygon points="758 384 512 507 512 573 758 450" fill="#F2F7FF"/>
+<polygon points="512 261 758 384 512 507 266 384" fill="#F2F7FF"/>
+<!-- 清点：抬起的那道间隙 -->
+<path d="M512 486 V552" stroke="#FFB227" stroke-width="20" stroke-linecap="round"/>
+
+</svg>

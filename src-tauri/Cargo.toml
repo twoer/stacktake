@@ -1,0 +1,33 @@
+[package]
+name = "stacktake"
+version = "0.1.0"
+description = "本机资产清点台账"
+authors = ["twoer"]
+license = "MIT"
+edition = "2024"
+
+[lib]
+name = "stacktake_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 扫描层
+ignore = "0.4"      # ripgrep 出品的并行目录遍历，自带 .gitignore 语义
+rayon = "1"         # 数据并行
+trash = "5"         # 跨平台移入废纸篓，绝不硬删
+dirs = "5"          # 用户目录（home / config）
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

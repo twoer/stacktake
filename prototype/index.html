@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stacktake · 测绘台原型</title>
+    <!-- 首帧定主题：默认深色（测绘台），存过 light 才用浅色 -->
+    <script>
+      try {
+        const t = localStorage.getItem("stacktake-proto-theme");
+        const dark = t === "dark" || (!t && !matchMedia("(prefers-color-scheme: light)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+      } catch {
+        document.documentElement.classList.add("dark");
+      }
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside class="sidebar" id="sidebar">
+        <div class="side-top" data-tauri-drag-region>
+          <div class="traffic" aria-hidden="true">
+            <span class="tl tl-close"></span>
+            <span class="tl tl-min"></span>
+            <span class="tl tl-max"></span>
+          </div>
+          <div class="brand" data-tauri-drag-region>
+            <span class="brand-name">STACKTAKE</span>
+            <span class="brand-sub">ASSET SURVEY SHEET</span>
+          </div>
+        </div>
+        <div class="nav-scroll" id="nav-scroll">
+          <div class="nav-label">图例目录</div>
+          <nav class="nav" id="nav" aria-label="分组"></nav>
+        </div>
+        <div class="side-foot">
+          <button class="side-item settings-item" id="settings-btn" data-route="settings">
+            <span class="side-idx">··</span>
+            <span class="side-name">设置</span>
+          </button>
+          <div class="side-meta">
+            <span class="tabular">v0.1.0</span>
+            <span>只读 · 不读文件内容</span>
+          </div>
+        </div>
+        <span class="side-marker" id="side-marker" aria-hidden="true"></span>
+      </aside>
+
+      <div class="main">
+        <header class="toolbar" id="toolbar" data-tauri-drag-region></header>
+        <div class="scanbar" id="scanbar" hidden>
+          <div class="scanfill" id="scanfill"></div>
+        </div>
+
+        <div class="body">
+          <div class="stage">
+            <div class="ruler" id="ruler" aria-hidden="true"></div>
+            <div class="scroll" id="scroll">
+              <div class="content" id="content"></div>
+            </div>
+            <div class="sweep" id="sweep" hidden aria-hidden="true"></div>
+          </div>
+          <aside class="inspector" id="inspector" aria-label="检查器"></aside>
+        </div>
+
+        <footer class="statusbar" id="statusbar"></footer>
+      </div>
+    </div>
+
+    <div id="popover-root"></div>
+    <div class="ctxmenu" id="ctxmenu" role="menu" hidden></div>
+    <div class="toasts" id="toasts" aria-live="polite"></div>
+
+    <svg class="sprite" aria-hidden="true" focusable="false">
+      <symbol id="i-filter" viewBox="0 0 24 24">
+        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="7" />
+        <path d="m21 21-4.3-4.3" />
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+        <path d="M3 3v5h5" />
+        <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+        <path d="M16 16h5v5" />
+      </symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" />
+        <path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" />
+        <path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" />
+      </symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24">
+        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+      </symbol>
+      <symbol id="i-panel" viewBox="0 0 24 24">
+        <rect width="18" height="18" x="3" y="3" rx="2" />
+        <path d="M15 3v18" />
+      </symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24">
+        <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+      </symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24">
+        <path d="M3 6h18" />
+        <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+        <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+        <path d="M10 11v6" /><path d="M14 11v6" />
+      </symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24">
+        <path d="m9 18 6-6-6-6" />
+      </symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24">
+        <rect width="14" height="14" x="8" y="8" rx="2" />
+        <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+      </symbol>
+      <symbol id="i-check" viewBox="0 0 24 24">
+        <path d="M20 6 9 17l-5-5" />
+      </symbol>
+      <symbol id="i-dot" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3" />
+      </symbol>
+      <symbol id="i-enter" viewBox="0 0 24 24">
+        <path d="M9 6h11" /><path d="m16 12 4 0" /><path d="m16 18 4 0" />
+        <path d="M9 6v12" /><path d="m13 10-4 4 4 4" />
+      </symbol>
+    </svg>
+
+    <script src="./data.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

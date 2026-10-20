@@ -1,0 +1,113 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  # ── macOS：全量门禁 ──────────────────────────────────────────
+  #
+  # Tauri 的 Linux 后端要额外装一堆系统库（webkit2gtk 等），
+  # 而这款应用面向 macOS + Windows，所以 runner 也只有这两种。
+  # 真实数据类测试在干净环境会自动跳过
+  # （tests.rs 里各扫描器的 `present() / exists()` 守卫），不受影响。
+  verify:
+    name: macOS（全量门禁）
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 换掉 rsproxy 镜像（仅本 job）
+        # 与下面 Windows job 同一条处理，此前 macOS 这边漏了：
+        # src-tauri/.cargo/config.toml 把 crates.io 换成 rsproxy 稀疏索引——
+        # 那是给国内开发机用的（硬约束 6，本机必需，不能删仓库里那份）。
+        # 但 GH runner 在美国，走国内镜像反而更慢更不稳。
+        # 这里只删工作区里这一份，仓库文件不动。
+        run: rm -f src-tauri/.cargo/config.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rust 格式
+        run: cargo fmt --all -- --check
+        working-directory: src-tauri
+
+      - name: Rust 静态检查
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: src-tauri
+
+      - name: Rust 测试
+        run: cargo test
+        working-directory: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 前端类型检查
+        run: npx vue-tsc --noEmit
+
+      - name: 前端构建
+        run: npm run build
+
+      - name: 契约校验器自检
+        run: node scripts/check-snapshot-contract.mjs --self-test
+
+      - name: 文档门禁（预算/索引/死链）
+        run: node scripts/check-docs.mjs --self-test && node scripts/check-docs.mjs
+
+  # ── Windows：只守 Rust 侧 ─────────────────────────────────────
+  #
+  # 这个 job 存在的唯一理由：**让 Windows 那半边代码路径有机器守着**。
+  # W2 把平台做成了传进来的值（`scan/platform.rs::Platform`），映射表已能在
+  # macOS 上被断言；但 `#[cfg(not(unix))]` 那几个分支（权限位、体积口径的
+  # `file_size` 兜底）只在 Windows 上才编译过，此前无人验证。
+  #
+  # 刻意**不跑**前端那一套（npm ci / vue-tsc / vite build）与契约自检：
+  # 它们与平台无关，在 macOS job 上验一次就够，重复跑只是拖慢 CI。
+  #
+  # 关于「Windows 路径对不对」：这个 job **核不了**。runner 上没装 VS Code /
+  # Android Studio / DevEco Studio，探不到就是探不到；GH runner 也不读
+  # `%LOCALAPPDATA%` 下用户的真实缓存布局。映射表的正确性由
+  # `windows_cache_locations_are_pinned` 等单测在本机守着，
+  # 「那个目录真在不在那儿」只能等有人在 Windows 实机上跑一次。
+  windows:
+    name: Windows（Rust 侧）
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 换掉 rsproxy 镜像（仅本 job）
+        # src-tauri/.cargo/config.toml 把 crates.io 换成 rsproxy 稀疏索引——
+        # 那是给国内开发机用的（硬约束 6，本机必需，不能删仓库里那份）。
+        # 但 GH runner 在美国，走国内镜像反而更慢更不稳。
+        # 这里只删工作区里这一份，仓库文件不动。
+        run: rm -f src-tauri/.cargo/config.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust 格式
+        run: cargo fmt --all -- --check
+        working-directory: src-tauri
+
+      - name: Rust 静态检查
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: src-tauri
+
+      - name: Rust 测试
+        # 跑真实数据测试，但 runner 上没有开发环境：绝大多数用例的
+        # `present() / exists()` 守卫会直接返回，剩下的是喂临时目录的纯函数
+        # 测试与平台映射断言——那正是这个 job 要验的东西。
+        run: cargo test
+        working-directory: src-tauri

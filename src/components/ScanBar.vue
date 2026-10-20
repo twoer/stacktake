@@ -1,0 +1,22 @@
+<script setup lang="ts">
+import { computed } from "vue";
+
+const props = defineProps<{ pct: number }>();
+const clamped = computed(() => Math.max(0, Math.min(100, props.pct)));
+</script>
+
+<template>
+  <!-- 真实进度条：墨色填充 + 行首笔尖。宽度用 transform 而不是 width，
+       每来一个分组完成事件只重绘合成层，不触发布局。 -->
+  <div
+    class="scanbar"
+    role="progressbar"
+    aria-label="扫描进度"
+    :aria-valuenow="Math.round(clamped)"
+    aria-valuemin="0"
+    aria-valuemax="100"
+  >
+    <div class="scanfill" :style="{ transform: `scaleX(${clamped / 100})` }" />
+    <span class="scannib" :style="{ left: `${clamped}%` }" />
+  </div>
+</template>

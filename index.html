@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stacktake</title>
+  </head>
+
+  <body>
+    <div id="app"></div>
+    <!-- 首帧前定深浅色，否则深色系统下每次开 app 先闪一帧白。
+         逻辑与 src/composables/useTheme.ts 的初始值一致（那边是真相，改这里要同步）。 -->
+    <script>
+      try {
+        var t = localStorage.getItem("stacktake-theme");
+        var dark =
+          t === "dark" ||
+          (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+        if (dark) document.documentElement.classList.add("dark");
+      } catch (e) {}
+      // 只有 macOS 的窗口是透明的（tauri.macos.conf.json 才开 transparent + vibrancy），
+      // CSS 需要据此决定 body 底要不要透掉。透明与否是编译期按平台定的，这里必须同帧判出来
+      // ——晚一帧就会先闪一帧实色底。两个目标平台的 UA 互斥，够用。
+      try {
+        if (/Mac/.test(navigator.userAgent)) {
+          document.documentElement.classList.add("macos");
+        }
+      } catch (e) {}
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

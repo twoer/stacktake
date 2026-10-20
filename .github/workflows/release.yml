@@ -1,0 +1,96 @@
+name: release
+
+# 只认 tag。刻意不给 workflow_dispatch：tauri-action 的 tagName 取
+# github.ref_name，手动触发时那是分支名（master），会去建/改一个叫 master 的
+# release——一个只在调试路径上才出现的坑，不值得留。
+# 试跑的办法就是真的打一个 tag：git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  # ── 双平台矩阵 ────────────────────────────────────────────────
+  #
+  # 只出 arm64 的 macOS 与 x86_64 的 Windows：
+  #   - 不做 Intel 版（拍板 2026-10-19）——universal 二进制要同时装两个 Rust
+  #     target 并在 CI 上做 lipo，对本项目的受众不值这个复杂度；
+  #   - Linux 不进矩阵：Tauri 的 Linux 后端要 webkit2gtk 等一堆系统库，
+  #     而这款应用面向 macOS + Windows（与 ci.yml 同一条理由）。
+  #
+  # fail-fast: false —— 一个平台的构建挂了不该把另一个的成果一起丢掉，
+  # 两个平台的失败原因通常毫不相干。
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bundles: dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 换掉 rsproxy 镜像（仅本 job）
+        # src-tauri/.cargo/config.toml 把 crates.io 换成 rsproxy 稀疏索引——
+        # 那是给国内开发机用的（硬约束 6，本机必需，不能删仓库里那份）。
+        # GH runner 在美国，走国内镜像反而更慢更不稳；打包要拉的依赖比
+        # ci.yml 多得多（release profile 全量），这里更扛不住。
+        # 只删工作区里这一份，仓库文件不动。
+        run: rm -f src-tauri/.cargo/config.toml
+        shell: bash
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # release profile 是 lto + codegen-units=1，冷编译一次不便宜；
+      # 两个平台的 target/ 各自独立缓存，互不干扰。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 打包并上传 Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Stacktake ${{ github.ref_name }}
+          # 出草稿而不是直接发布：产物没有 Apple Developer ID 签名，未签名的
+          # .app/.dmg 在 macOS 上会被 Gatekeeper 拦（用户要右键→打开）。
+          # 发布前留一步人工确认，别让一个 tag 直接推到用户面前。
+          # 确认没问题就去 GitHub 上点 Publish release。
+          releaseDraft: true
+          prerelease: false
+          # 显式指定 --bundles，不靠 tauri.conf.json 的 "all" 推断：
+          # 配置文件里的 targets 是全局的（macOS 读得到 nsis 这个条目、
+          # Windows 读得到 dmg），靠平台过滤不如在 CI 里说死。
+          # macOS 出 dmg，Windows 出 NSIS 的单文件 exe（WiX 要 .NET，
+          # NSIS 不需要额外工具链；个人分发 exe 也比 msi 顺手）。
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      # ── 刻意没做的三件事（改之前先想清楚）─────────────────────
+      # 1. 没有 uploadUpdaterJson / TAURI_SIGNING_PRIVATE_KEY：
+      #    B 方案只做「有新版本就提示 + 打开下载页」，不做应用内自动更新，
+      #    因此不需要 latest.json，也不需要那把丢了就永久无法给存量用户
+      #    推送更新的 minisign 私钥。
+      # 2. 没有 Apple 签名/公证的环境变量：本机没有 Developer ID（拍板时确认）。
+      #    要加就把 APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD /
+      #    APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+      #    六个 secret 配齐，那是另一把刀。
+      # 3. 没有 Linux job，理由见上方矩阵注释。

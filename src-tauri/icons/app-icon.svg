@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="tile" x1="196" y1="112" x2="842" y2="916" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#322C22"/><stop offset="0.6" stop-color="#242017"/><stop offset="1" stop-color="#181410"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(318 138) rotate(54) scale(620 660)">
+      <stop stop-color="#FFFFFF" stop-opacity="0.10"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="page" x1="512" y1="288" x2="512" y2="650" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FBF7ED"/><stop offset="1" stop-color="#EFE5D1"/>
+    </linearGradient>
+    <filter id="lift" x="230" y="190" width="564" height="540" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#000000" flood-opacity="0.42"/>
+    </filter>
+  </defs>
+
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+  <rect x="101" y="101" width="822" height="822" rx="184" stroke="#FFFFFF" stroke-opacity="0.09" stroke-width="2"/>
+
+  <!-- 内容放大 1.2×（占 tile 约 66%），保持以画布中心为原点 -->
+  <g transform="translate(512 512) scale(1.2) translate(-512 -512)">
+    <!-- 本机：纸做的一台显示器，底座压在墨色桌面上 -->
+    <rect x="486" y="642" width="52" height="70" fill="#D8CBB0"/>
+    <rect x="398" y="706" width="228" height="30" rx="15" fill="#BCAE92"/>
+    <rect x="286" y="288" width="452" height="362" rx="34" fill="url(#page)" filter="url(#lift)"/>
+
+    <!-- 屏内是一页资产账：左列资产、右列占用，第三行标绿＝可回收 -->
+    <rect x="336" y="348" width="184" height="22" rx="9" fill="#211F19"/>
+    <rect x="336" y="384" width="92" height="7" rx="3.5" fill="#211F19" fill-opacity="0.45"/>
+    <rect x="336" y="424" width="352" height="4" rx="2" fill="#211F19" fill-opacity="0.22"/>
+
+    <rect x="336" y="446" width="88" height="7" rx="3.5" fill="#211F19" fill-opacity="0.30"/>
+    <rect x="640" y="446" width="48" height="7" rx="3.5" fill="#211F19" fill-opacity="0.30"/>
+    <rect x="596" y="438" width="3" height="160" fill="#211F19" fill-opacity="0.12"/>
+
+    <rect x="336" y="480" width="176" height="13" rx="6.5" fill="#211F19" fill-opacity="0.26"/>
+    <rect x="620" y="480" width="68" height="13" rx="6.5" fill="#211F19" fill-opacity="0.26"/>
+
+    <rect x="336" y="532" width="150" height="13" rx="6.5" fill="#211F19" fill-opacity="0.26"/>
+    <rect x="636" y="532" width="52" height="13" rx="6.5" fill="#211F19" fill-opacity="0.26"/>
+
+    <rect x="336" y="584" width="196" height="13" rx="6.5" fill="#211F19" fill-opacity="0.26"/>
+    <rect x="628" y="584" width="60" height="13" rx="6.5" fill="#3B7A52"/>
+
+    <rect x="336" y="610" width="352" height="3" rx="1.5" fill="#211F19" fill-opacity="0.18"/>
+  </g>
+</svg>

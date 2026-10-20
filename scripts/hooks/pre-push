@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# 推送前外环：内环 + cargo test + 前端构建（约 20 秒）。
+# 跳过路径——验证戳：scripts/verify.sh（外环/评估档）全绿且工作区干净时会在
+# <git-dir>/gate-stamp 写「树 hash + 档位」。要推的每个引用的树与之相同 = 同一棵树刚在本机
+# 全绿过，不再重跑（远端 CI 仍会全量跑一遍，戳只是去掉本地的那次重复）。
+# 想无条件跳过仍是老办法：git push --no-verify。
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+GITDIR="$(git -C "$ROOT" rev-parse --git-dir)"
+
+# stdin 每行: local_ref local_sha remote_ref remote_sha
+refs=()
+while read -r _lref lsha _rref _rsha; do
+  [[ -n "${lsha:-}" ]] && refs+=("$lsha")
+done
+
+stamp_hit=false
+if [[ -s "$GITDIR/gate-stamp" && ${#refs[@]} -gt 0 ]]; then
+  read -r stamped_tree tier < "$GITDIR/gate-stamp"
+  case "$tier" in outer|full) ;; *) refs=() ;; esac
+  stamp_hit=true
+  # macOS 自带 bash 3.2 在 set -u 下展开空数组会报 unbound variable，循环必须挂在非空守卫下
+  if [[ ${#refs[@]} -gt 0 ]]; then
+    for lsha in "${refs[@]}"; do
+      # 全零 sha = 删除远端分支，树不存在，保守当未验证
+      if [[ "$lsha" == "0000000000000000000000000000000000000000" ]]; then stamp_hit=false; break; fi
+      tree="$(git -C "$ROOT" rev-parse "$lsha^{tree}" 2>/dev/null)" || { stamp_hit=false; break; }
+      [[ "$tree" == "$stamped_tree" ]] || { stamp_hit=false; break; }
+    done
+  else
+    stamp_hit=false
+  fi
+fi
+
+if $stamp_hit; then
+  echo "[pre-push] 验证戳命中（同一棵树刚过 ${tier}），跳过本地重跑；远端 CI 会再全量跑一遍"
+  exit 0
+fi
+
+exec "$ROOT/scripts/verify.sh"

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+<defs>
+<linearGradient id="bg" x1="140" y1="120" x2="900" y2="920" gradientUnits="userSpaceOnUse">
+<stop stop-color="#111A2C"/><stop offset="1" stop-color="#1C2A45"/>
+</linearGradient>
+<radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(300 200) rotate(48) scale(560 520)">
+<stop stop-color="#FFFFFF" stop-opacity="0.10"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+</radialGradient>
+</defs>
+<rect x="88" y="88" width="848" height="848" rx="196" fill="url(#bg)"/>
+<rect x="88" y="88" width="848" height="848" rx="196" fill="url(#glow)"/>
+
+<!-- 侧栏：分组 -->
+<rect x="234" y="336" width="76" height="352" rx="32" fill="#A3B3CD"/>
+<!-- 分节标题 -->
+<rect x="360" y="336" width="170" height="34" rx="17" fill="#A3B3CD"/>
+<!-- 三条条目，长度即体积 -->
+<rect x="360" y="408" width="300" height="76" rx="28" fill="#D3DEEE"/>
+<rect x="360" y="510" width="430" height="76" rx="28" fill="#F2F7FF"/>
+<rect x="360" y="612" width="360" height="76" rx="28" fill="#D3DEEE"/>
+<!-- 最长行末端：可回收的那一段 -->
+<rect x="714" y="510" width="76" height="76" rx="26" fill="#FFB227"/>
+
+</svg>

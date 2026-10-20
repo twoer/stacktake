@@ -1,0 +1,13 @@
+[source.crates-io]
+# crates.io 直连在国内极慢（实测下载超时），走 rsproxy 稀疏索引。
+replace-with = 'rsproxy-sparse'
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[net]
+retry = 5
+
+[registries.rsproxy]
+protocol = "sparse"
+index = "sparse+https://rsproxy.cn/index/"
