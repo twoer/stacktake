@@ -244,6 +244,13 @@ pub(crate) fn dir_size_noting(
     dir_size_impl(path, exclude, Some((pred, noted)))
 }
 
+/// Windows 上 `InodeSet` 就是 `()`，这里的 `let seen` 绑的是 unit 值——刻意的：
+/// 两个平台的调用处写法必须一致，否则 `Walk { seen: ... }` 要跟着分叉。
+/// clippy 的 `let_unit_value` 不懂这个意图，在 `-D warnings` 下直接判红
+/// （CI 的 Windows job 首次跑到 clippy 就挂在这一行，macOS 永不触发）。
+/// **别改成零大小具名 struct 来绕开它**——那样 `InodeSet::default()` 会撞上
+/// `default_constructed_unit_structs`，红灯只是换了个名字。
+#[allow(clippy::let_unit_value)]
 fn dir_size_impl(
     path: &Path,
     exclude: &HashSet<PathBuf>,
