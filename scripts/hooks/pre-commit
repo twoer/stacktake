@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 预提交闸（轻量，不替代 verify-cut 双闸）——启用方式见 scripts/hooks/install.sh。
+# 预提交闸（轻量，不替代完整门禁）——启用方式见 scripts/hooks/install.sh。
 # 三件事:
 #   1. 私钥/证书拦截: 文件名形态（*.pem/*.key/id_rsa…）与内容形态（PEM 甲胄头，
 #      即 BEGIN 行带前后短划）都不准入库——本项目的安全身份是「绝不泄漏私钥」

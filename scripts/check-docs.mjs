@@ -50,7 +50,11 @@ const LIVE_DOCS = [
 // 本地开发工作流文档（取刀清单 / 归档正文 / 归档索引）不随仓库分发。
 // 作者本机有时照常受检；clone 下来的树里没有就跳过——「没有内部文档」不是错误，
 // 不能让一棵干净的 clone 因为缺它而红。判据只看文件在不在，不区分是谁在跑。
-const LOCAL_ONLY_DOCS = ["docs/backlog.md", "docs/backlog-archive.md"];
+const LOCAL_ONLY_DOCS = [
+  "docs/backlog.md",
+  "docs/backlog-archive.md",
+  "docs/harness-and-loop.md",
+];
 
 const read = (root, file) => readFileSync(join(root, file), "utf8");
 const write = (root, file, text) => writeFileSync(join(root, file), text);

@@ -1,10 +1,26 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-// 侧栏不带图标（U15 拍板）：此前 IconPark 分组图标 + Lucide 控件图标两套并排，
-// 通用线性图标铺满侧栏是「Figma 稿 / 生成式界面」的指纹，两套混用更让谁都不像立场。
-// 纸账本的目录页就是文字 + 右对齐的数——分组名本身已经足够区分，图标不承载信息。
-// components/icons/HarmonyOsIcon.vue 保留在树里（恢复图标只是一行引用）。
+// 侧栏图标（2026-10-21 用户拍板重开 U15）。U15 原判「侧栏不放图标」——通用线性图标
+// 铺满侧栏是生成式界面的指纹，且当时 IconPark 分组图标 + Lucide 控件图标两套并排，
+// 谁都不像立场。重开后只守两条：① 单色 currentColor，跟着行文字走（选中是墨色、
+// 未选中退一档），不引彩色——配色仍只出自 style.css 的纸墨 token；② 只此一套 Lucide。
+// 鸿蒙走自建的 HarmonyOsIcon（Lucide 无鸿蒙、品牌图标 v1 已删）。
+import {
+  Apple,
+  Boxes,
+  BrainCircuit,
+  Coffee,
+  FolderGit2,
+  LayoutDashboard,
+  Package,
+  Settings,
+  Smartphone,
+  Sparkles,
+  Terminal,
+} from "@lucide/vue";
+import type { Component } from "vue";
+import HarmonyOsIcon from "@/components/icons/HarmonyOsIcon.vue";
 import { groupSize } from "@/lib/types";
 import { EASE_OUT, reducedMotion } from "@/lib/motion";
 import { useAssets } from "@/composables/useAssets";
@@ -32,6 +48,34 @@ const onSettings = computed(() => route.path.startsWith("/settings"));
  * 依赖缓存 → 工具数据 → 模型 → 虚拟机）。前端不再排序。
  */
 const sidebarGroups = computed(() => groups.value.filter((g) => g.id !== "overview"));
+
+/**
+ * 侧栏图标表：分组 id → 图标构件。
+ *
+ * **未知 id 回落 Boxes，不是报错也不是空白**——AGENTS 架构段要求「新增资产类型只需
+ * 实现 Scanner 并注册进 scanners()，前端不用改」，所以新分组必须能在不动前端的前提下
+ * 出现；缺一颗图标不该让它整行缩进塌掉（有的行有图标有的行没有，比都有一颗通用图标丑）。
+ * 表本身覆盖全部 9 个 id（含 H14 隐藏的 java / harmony 与仅 Windows 注册的 wsl），
+ * 撤隐藏 / 换平台都不用回来补。
+ *
+ * 总览与设置这两个非分组入口也走这张表（它们和分组行同一套选中规则 + 同一条墨标，
+ * 图标口径不该分家）。
+ */
+const SIDE_ICONS: Record<string, Component> = {
+  overview: LayoutDashboard,
+  repos: FolderGit2,
+  java: Coffee,
+  ios: Apple,
+  android: Smartphone,
+  harmony: HarmonyOsIcon,
+  toolchain: Package,
+  ai_tools: Sparkles,
+  local_models: BrainCircuit,
+  wsl: Terminal,
+  settings: Settings,
+};
+
+const sideIcon = (id: string): Component => SIDE_ICONS[id] ?? Boxes;
 
 /** 全机合计 = 各分组体积之和（总览行的体积就是这个数，但它是现算的，不重复累它）。 */
 const totalSize = computed(() =>
@@ -182,6 +226,7 @@ onUnmounted(() => {
             :aria-current="!onSettings && current?.id === 'overview' ? 'page' : undefined"
             @click="pick('overview')"
           >
+            <component :is="sideIcon('overview')" class="size-3.5 shrink-0" />
             <span class="min-w-0 flex-1 truncate text-[13px]">总览</span>
             <span class="shrink-0 text-[11px] text-muted-foreground">
               <ByteValue :bytes="totalSize" animate />
@@ -206,6 +251,7 @@ onUnmounted(() => {
             :aria-current="!onSettings && current?.id === g.id ? 'page' : undefined"
             @click="pick(g.id)"
           >
+            <component :is="sideIcon(g.id)" class="size-3.5 shrink-0" />
             <span class="min-w-0 flex-1 truncate text-[13px]">{{ g.label }}</span>
             <span class="shrink-0 text-[11px] text-muted-foreground">
               <ByteValue v-if="groupSize(g) > 0" :bytes="groupSize(g)" animate />
@@ -222,8 +268,9 @@ onUnmounted(() => {
            版本号并入按钮（2026-10-21 用户拍板）：撤掉独立的「有更新」行，
            有更新时把显示的版本号换成新版本 + 小点，点击仍进设置页——侧栏只做
            状态展示，下载动作在设置页的「更新」节（一次点击一个职责）。
-           启动那次检查是静默的：断网、没有 release、读不到版本号，这里什么都不显。 -->
-      <div class="border-t border-border px-1.5 py-1.5">
+           启动那次检查是静默的：断网、没有 release、读不到版本号，这里什么都不显。
+           上方分隔线 2026-10-21 用户拍板去掉（border-t）：设置行与分组之间只靠留白分隔。 -->
+      <div class="px-1.5 py-1.5">
         <button
           data-side-key="settings"
           class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -242,6 +289,7 @@ onUnmounted(() => {
           "
           @click="router.push('/settings')"
         >
+          <component :is="sideIcon('settings')" class="size-3.5 shrink-0" />
           <span class="min-w-0 flex-1 truncate text-[13px]">设置</span>
           <template v-if="updateState === 'available'">
             <span class="size-1.5 shrink-0 rounded-full bg-primary" />

@@ -76,10 +76,13 @@ jobs:
           # **签名无效**（区别于未签名）的回应是「已损坏」对话框：只有
           # 取消/移到废纸篓，**没有绕过入口**（2026-10-21 v0.1.2 实测，
           # 本地 tauri build 产物同样无效，不是 CI 事故）。
-          # 封存后签名结构有效（实测 valid on disk + Sealed Resources）；
-          # adhoc 仍不是受信身份，浏览器下载后 Gatekeeper 的弹窗形态
-          # （静默通过 / 可绕过的「未验证开发者」）未经真机验证——
-          # 彻底免弹窗要 Developer ID + 公证，见文件末尾「刻意没做」。
+          # 封存后签名结构有效（实测 valid on disk + Sealed Resources）。
+          # adhoc 仍不是受信身份：A/B 实测（2026-10-21，手动 quarantine +
+          # NSWorkspace 双击等效路径）——签名无效 = 「已损坏」硬拦对话框
+          # （没有任何绕过入口）；有效 adhoc = 「Apple 无法检查其是否包含
+          # 恶意软件」，即未公证应用的常规对话框，有系统设置「仍要打开」/
+          # 右键打开 / xattr -cr 等绕过通道。彻底免弹窗要 Developer ID +
+          # 公证，见文件末尾「刻意没做」。
           # 值为 "-" 时 Tauri 跳过 DMG 自身签名（tauri#12288），无副作用；
           # Windows job 不走 macOS 打包路径，这个变量在那边空转。
           APPLE_SIGNING_IDENTITY: "-"

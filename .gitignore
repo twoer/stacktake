@@ -56,3 +56,13 @@ logo/png/
 # 生成的 data.js 含全部仓库名与真实路径，对外既跑不起来也不该看到
 prototype/
 prototype-ledger/
+
+# 内部流程脚本与 logo 过程稿：只对本机开发工作流有用（刀闸脚本、喂本机扫描
+# 缓存的截图台、图标生成脚本与候选配色），撤出仓库但本机保留；harness 说明文档同理
+docs/harness-and-loop.md
+scripts/verify-cut.sh
+scripts/render-preview.mjs
+logo/gen.mjs
+logo/make-preview.mjs
+logo/preview.html
+logo/svg/

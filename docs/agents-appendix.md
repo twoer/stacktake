@@ -54,9 +54,9 @@ S3 收窄 `cleanable` 口径的代价是**账面 toolchain 可回收从 31.27 GB
 - `GIT_*_DATE` 不吃 "400 days ago"（要绝对 Unix 时间戳；且判据读 `%ct` 提交者日期，只改 author date 不够）。
 - 只有 `branch.*.remote` 而没有 `[remote "origin"]` 段时 `@{u}` 解析失败（fatal: not stored as a remote-tracking branch），必须真 `git remote add`。
 
-## harness 接入初期抓到的问题（docs/harness-and-loop.md 的姊妹记录）
+## harness 接入初期抓到的问题
 
-改名后 target/ 陈旧产物（`cargo clean -p tauri` 修）、clippy 9 警告清零后才上 `-D warnings`、repos 声明 5 个字段但前端只渲染 3 个（契约测试首跑抓到）、`SCHEMA_VERSION >= 2` 常量断言是死代码（换成 `scanner_registration_is_pinned` 集合哨兵）、测试硬依赖本机 JDK（改注册状态与探测一致）、私钥内容闸第一跑误伤自家测试针串（收紧到完整 PEM 甲胄头）。细节见 `docs/harness-and-loop.md`「这次接入时抓到的问题」。
+改名后 target/ 陈旧产物（`cargo clean -p tauri` 修）、clippy 9 警告清零后才上 `-D warnings`、repos 声明 5 个字段但前端只渲染 3 个（契约测试首跑抓到）、`SCHEMA_VERSION >= 2` 常量断言是死代码（换成 `scanner_registration_is_pinned` 集合哨兵）、测试硬依赖本机 JDK（改注册状态与探测一致）、私钥内容闸第一跑误伤自家测试针串（收紧到完整 PEM 甲胄头）。
 
 ## 文档漂移治理的判断线（H4/H6/H7 沉淀，写文档前想清楚）
 

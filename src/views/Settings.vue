@@ -88,12 +88,13 @@ const dlPct = computed(() => {
       <h1 class="text-sm font-semibold">设置</h1>
       <div class="flex-1" />
     </div>
-    <!-- 顶部进度条：扫描与下载共用这一条（两个模块级单例各发各的事件，同一时刻
-         只可能有一个在跑）。下载也在这里画一份——点完「下载」用户可能已经滚到别处，
-         顶栏这条不随滚动走；与扫扫的进度是同一支笔，不用学第二套。 -->
+    <!-- 顶部进度条：只画扫描。这里一度让下载也挤进来共用一条（扫描完就原地改写
+         成下载百分比），观感是「下载污染了扫描进度条」——两支进度共用一支笔，
+         人分不清刚才动的是谁。下载进度回归「更新」节内，各画各的。
+         顺带：两个分支都是 ScanBar 且当时没写 key，Vue 视为同一元素就地 patch，
+         fade 过渡也没触发（说到这一条是为了别再把它加回来：共用必出问题）。 -->
     <Transition name="fade">
       <ScanBar v-if="scanning" :pct="scanPct" />
-      <ScanBar v-else-if="dlState === 'downloading'" :pct="dlPct" label="下载进度" />
     </Transition>
 
     <ScrollArea class="min-h-0 flex-1">
@@ -113,7 +114,9 @@ const dlPct = computed(() => {
             </p>
           </div>
           <div class="mt-3 flex items-center gap-1.5">
-            <Button variant="outline" size="xs" :disabled="scanning" @click="rescanNow">
+            <!-- 与「下载」互相排斥（另一边同样 disabled）：扫描条在顶部、下载条在更新节，
+                 同色同粗细的两条墨线同时在屏上会让人分不清谁是谁。 -->
+            <Button variant="outline" size="xs" :disabled="scanning || dlState === 'downloading'" @click="rescanNow">
               <RefreshCw />
               立即重扫
             </Button>
@@ -158,7 +161,10 @@ const dlPct = computed(() => {
           <!-- 下载进度：节内一条 ScanBar + 12px 正文字号的百分比。
                第一版只有一行 11px 灰字，点完下载按钮消失后附近没有任何显眼信号
                （2026-10-21 用户反馈「不明显」）——现在与扫描进度同一支笔、
-               同一套位置逻辑（顶部一份、节内一份）。总量拿不到时退化成「已接收 X」。 -->
+               同一支笔。总量拿不到时退化成「已接收 X」。
+               ⚠️ 只在节内这一份，别再往顶部搬：顶部那条归扫描，共用会串成一根线
+               （原因见上方顶部进度条的注释）。滚出视野的代价已经用「下载按钮期间互斥」
+               的方式降掉了——同一时刻页面上只可能有这一进度在进行。 -->
           <div v-if="dlState === 'downloading'" class="mt-3">
             <ScanBar :pct="dlPct" label="下载进度" />
             <p class="mt-1.5 text-[12px] leading-relaxed text-foreground">
@@ -195,6 +201,7 @@ const dlPct = computed(() => {
             <Button
               v-if="updateState === 'available' && dlState !== 'downloading'"
               size="xs"
+              :disabled="scanning"
               @click="downloadUpdate"
             >
               <Download />

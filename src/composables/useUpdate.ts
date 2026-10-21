@@ -15,7 +15,9 @@ import { checkForUpdate, RELEASES_URL, type CheckResult } from "@/lib/release";
  * 它）。这里 openUrl 的目标恒为 https://github.com/... 的 releases 页面，
  * 是 URL 不是路径，且不打开任何本机条目——别把它改成 openPath。
  * （下载安装包走 Rust 侧 download_latest_update，下完自动打开是用户
- * 2026-10-21 拍板的 B 方案，范围锁在刚下载的那一个文件上。）
+ * 2026-10-21 拍板的 B 方案，范围锁在刚下载的那一个文件上；同日拍板的 A
+ * 方案是打开之后本程序自行退出——运行中的 .app 覆盖不掉，不退出则用户拖
+ * 拽替换时必撞访达的「正在使用中」。）
  */
 const state = ref<"idle" | "checking" | "up-to-date" | "available" | "error">("idle");
 const version = ref("");
@@ -101,8 +103,9 @@ export function useUpdate() {
   }
 
   /**
-   * 下载安装包（B 方案，2026-10-21 用户拍板）：Rust 侧查最新 release、
-   * 按平台挑安装包、流式下载到「下载」目录、下完自动打开。
+   * 下载安装包（2026-10-21 用户拍板 B + A）：Rust 侧查最新 release、
+   * 按平台挑安装包、流式下载到「下载」目录、下完自动打开，随后本程序
+   * 延一拍自行退出（让开位置好让用户拖拽替换）。
    *
    * 为什么不把资产地址从前端传过去：Rust 侧点击那一刻重新查一次，
    * 比把启动检查的响应存到点击时用更不容易过期（虽然版本展示仍以
@@ -117,7 +120,10 @@ export function useUpdate() {
       const path = await invoke<string>("download_latest_update");
       dlState.value = "done";
       dlPath.value = path;
-      toast.success(`已下载 ${latest.value} 并打开安装包`, { description: path });
+      // 退出是 Rust 侧延一拍做的，这里只负责把「为什么它要消失」说在前面
+      toast.success(`已下载 ${latest.value} 并打开安装包，即将退出以便替换`, {
+        description: path,
+      });
     } catch (e) {
       dlState.value = "idle";
       dlMessage.value = String(e);

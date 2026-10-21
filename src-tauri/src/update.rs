@@ -12,6 +12,12 @@
 //! 由用户点「下载」显式发起（2026-10-21 用户拍板选 B：下完自动打开）。
 //! 范围锁死在这一个文件上：没有暴露「打开任意路径」的 command，前端也
 //! 拿不到这条路径以外的任何东西。
+//!
+//! 打开之后**本程序会自己退出**（同日拍板选 A）：macOS 上更新是把新 .app
+//! 拖到 /Applications 覆盖旧的，而正在运行的那一个覆盖不掉——访达会回
+//! 「项目 Stacktake.app 正在使用中」，且没有任何绕过。Windows 的 NSIS
+//! 安装器能替用户杀掉运行中的进程，DMG 拖拽是纯文件操作、没有这层能力，
+//! 所以只能我们自己把路让开。
 
 use std::time::{Duration, Instant};
 
@@ -92,11 +98,12 @@ fn platform_label() -> &'static str {
     }
 }
 
-/// 下载最新版安装包到「下载」目录，下完**直接打开**（2026-10-21 用户拍板选 B）。
+/// 下载最新版安装包到「下载」目录，下完**自动打开并退出本程序**
+///（2026-10-21 用户拍板：B 下完打开 + A 打开后退出）。
 ///
-/// 流程：查 latest release → 按平台挑资产 → 流式写盘（进度事件）→ 自动打开。
-/// 全程由用户显式发起（设置页的「下载」按钮），没有任何自动触发路径。
-/// 返回落盘路径。
+/// 流程：查 latest release → 按平台挑资产 → 流式写盘（进度事件）→ 自动打开
+/// → 延一拍退出。全程由用户显式发起（设置页的「下载」按钮），没有任何
+/// 自动触发路径。返回落盘路径（退出前已经返回给前端，见最后那段注释）。
 #[tauri::command]
 pub async fn download_latest_update(app: AppHandle) -> Result<String, String> {
     let client = reqwest::Client::new();
@@ -185,6 +192,17 @@ pub async fn download_latest_update(app: AppHandle) -> Result<String, String> {
     // ── 3. 自动打开（B 方案）。范围见模块注释：只开这一个刚下载的文件 ──
     tauri_plugin_opener::open_path(&dest, None::<&str>)
         .map_err(|e| format!("已下载到 {}，但打开失败：{e}", dest.display()))?;
+
+    // ── 4. 让开：延一拍自行退出（A 方案），理由见模块注释 ──
+    // 延一拍（而不是立刻）是为了让本命令先把 Ok 返回给前端，前端才能把
+    // 「已下载并打开」的 toast 显示出来——毫无预告地消失会让人以为是崩了。
+    // 放在 Rust 侧而不是前端：退出是这条链路的收尾动作，不该依赖前端
+    // 恰好没出错。
+    let app_for_exit = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        app_for_exit.exit(0);
+    });
 
     Ok(dest.to_string_lossy().to_string())
 }
