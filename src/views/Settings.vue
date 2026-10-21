@@ -88,9 +88,12 @@ const dlPct = computed(() => {
       <h1 class="text-sm font-semibold">设置</h1>
       <div class="flex-1" />
     </div>
-    <!-- 重扫进度条：useAssets 是模块级单例，进度事件照样来，这里也画一份 -->
+    <!-- 顶部进度条：扫描与下载共用这一条（两个模块级单例各发各的事件，同一时刻
+         只可能有一个在跑）。下载也在这里画一份——点完「下载」用户可能已经滚到别处，
+         顶栏这条不随滚动走；与扫扫的进度是同一支笔，不用学第二套。 -->
     <Transition name="fade">
       <ScanBar v-if="scanning" :pct="scanPct" />
+      <ScanBar v-else-if="dlState === 'downloading'" :pct="dlPct" label="下载进度" />
     </Transition>
 
     <ScrollArea class="min-h-0 flex-1">
@@ -152,14 +155,26 @@ const dlPct = computed(() => {
             </template>
           </p>
 
-          <!-- 下载进度：总量拿不到时只显示已接收量（进度条由按钮态与百分比承担） -->
-          <p v-if="dlState === 'downloading'" class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-            下载中… 已接收 <ByteValue class="tabular-nums" :bytes="dlProgress?.received ?? 0" />
-            <template v-if="dlProgress?.total">
-              / <ByteValue class="tabular-nums" :bytes="dlProgress.total" />
-              <span class="tabular-nums">（{{ dlPct }}%）</span>
-            </template>
-          </p>
+          <!-- 下载进度：节内一条 ScanBar + 12px 正文字号的百分比。
+               第一版只有一行 11px 灰字，点完下载按钮消失后附近没有任何显眼信号
+               （2026-10-21 用户反馈「不明显」）——现在与扫描进度同一支笔、
+               同一套位置逻辑（顶部一份、节内一份）。总量拿不到时退化成「已接收 X」。 -->
+          <div v-if="dlState === 'downloading'" class="mt-3">
+            <ScanBar :pct="dlPct" label="下载进度" />
+            <p class="mt-1.5 text-[12px] leading-relaxed text-foreground">
+              下载中…
+              <span class="font-medium tabular-nums">
+                {{ dlProgress?.total ? `${dlPct}%` : "已接收" }}
+              </span>
+              <span class="text-muted-foreground">
+                （<ByteValue class="tabular-nums" :bytes="dlProgress?.received ?? 0" /><template
+                  v-if="dlProgress?.total"
+                >
+                  / <ByteValue class="tabular-nums" :bytes="dlProgress.total" /></template
+                >）
+              </span>
+            </p>
+          </div>
           <p v-else-if="dlState === 'done' && dlPath" class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
             已下载并打开：<span class="tabular-nums">{{ dlPath }}</span>
           </p>

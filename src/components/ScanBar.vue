@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue";
 
-const props = defineProps<{ pct: number }>();
+/** `label` 只为无障碍：扫描与下载共用这一条，读屏软件要说对正在发生什么。 */
+const props = withDefaults(defineProps<{ pct: number; label?: string }>(), {
+  label: "扫描进度",
+});
 const clamped = computed(() => Math.max(0, Math.min(100, props.pct)));
 </script>
 
@@ -11,7 +14,7 @@ const clamped = computed(() => Math.max(0, Math.min(100, props.pct)));
   <div
     class="scanbar"
     role="progressbar"
-    aria-label="扫描进度"
+    :aria-label="props.label"
     :aria-valuenow="Math.round(clamped)"
     aria-valuemin="0"
     aria-valuemax="100"
