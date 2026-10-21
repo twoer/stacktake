@@ -25,6 +25,12 @@ rayon = "1"         # 数据并行
 trash = "5"         # 跨平台移入废纸篓，绝不硬删
 dirs = "5"          # 用户目录（home / config）
 
+# 更新下载（update.rs）。必须 Rust 侧：下载域名会 302 到
+# objects.githubusercontent.com，不在 webview CSP 的 connect-src 白名单里，
+# 前端 fetch 会被静默拦掉。reqwest tauri 内部已带，这里是直接用。
+reqwest = { version = "0.12", features = ["stream", "json"] }
+tokio = { version = "1", features = ["fs", "io-util"] } # 流式写盘（tauri 的 async runtime 就是 tokio）
+
 [profile.release]
 codegen-units = 1
 lto = true

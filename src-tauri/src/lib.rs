@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod roots;
 pub mod scan;
+pub mod update;
 
 use scan::{
     AssetGroup, CleanPlan, CleanResult, CleanScope, Scanner, ai_tools::AiToolsScanner,
@@ -357,7 +358,9 @@ pub fn run() {
             rescan_now,
             clear_cache,
             reveal_path,
-            clean_items
+            clean_items,
+            // 应用内下载更新（Rust 侧，原因见 update.rs 模块注释）
+            update::download_latest_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

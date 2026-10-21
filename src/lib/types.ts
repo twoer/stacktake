@@ -130,6 +130,14 @@ export interface ScanProgress {
   label: string
 }
 
+/** Rust `update.rs::DownloadProgress` 的对应结构——下载进度事件（"update-download-progress"）的载荷。 */
+export interface DownloadProgress {
+  /** 已写盘的字节数 */
+  received: number
+  /** 总字节数；null = 服务端没给 Content-Length，此时画不了百分比 */
+  total: number | null
+}
+
 /**
  * 与 Rust 侧 `scan::MetricValue` 对应。
  *

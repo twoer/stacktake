@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRouter } from "vue-router";
-import { Download, RefreshCw, Trash2 } from "@lucide/vue";
+import { Code, Download, MessageSquare, RefreshCw, Scale, Trash2 } from "@lucide/vue";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "vue-sonner";
 import { formatAgo } from "@/lib/types";
+import { ISSUES_URL, LICENSE_URL, REPO_URL } from "@/lib/release";
 import { useAssets } from "@/composables/useAssets";
 import { useUpdate } from "@/composables/useUpdate";
 import { Button } from "@/components/ui/button";
+import ByteValue from "@/components/ByteValue.vue";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import ScanBar from "@/components/ScanBar.vue";
 
@@ -21,7 +24,12 @@ const {
   latest,
   message: updateError,
   checkNow,
+  downloadUpdate,
   openDownload,
+  dlState,
+  dlProgress,
+  dlPath,
+  dlMessage,
 } = useUpdate();
 
 async function clearCache() {
@@ -47,10 +55,26 @@ async function rescanNow() {
   }
 }
 
+/** 静态外链交系统浏览器打开。走 opener 的 openUrl 而非 openPath——目标是
+ *  https URL 不是本机路径（useUpdate.openDownload 同款，别改成 openPath）。
+ *  失败给 toast，与 clearCache 一个路子；按钮不置 disabled，点没打开也有反馈。 */
+async function openLink(url: string) {
+  try {
+    await openUrl(url);
+  } catch (e) {
+    toast.error(String(e));
+  }
+}
+
 const scanning = computed(() => loading.value);
 const scanPct = computed(() => {
   const p = progress.value;
   return p && p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
+});
+/** 下载百分比。total 拿不到（服务端没给 Content-Length）时显示 0，由文案兜底。 */
+const dlPct = computed(() => {
+  const p = dlProgress.value;
+  return p && p.total ? Math.round((p.received / p.total) * 100) : 0;
 });
 </script>
 
@@ -106,8 +130,8 @@ const scanPct = computed(() => {
           <h2 class="text-[13px] font-medium">更新</h2>
           <p class="mt-1 leading-relaxed text-muted-foreground">
             当前版本 <span class="tabular-nums">v{{ appVersion || "—" }}</span>。
-            <strong class="font-medium text-foreground">不做应用内自动更新</strong>——
-            查出新版本只在侧栏给个标记，装哪个包、什么时候装由你自己决定。
+            查出新版本后点「下载」直接获取本平台的安装包——仍在应用内下载、
+            不静默安装：下完自动打开安装包，装不装、什么时候装由你最后一步决定。
           </p>
 
           <!-- 状态行：idle 不写任何东西。启动那次检查如果失败，这里就是空的，
@@ -118,7 +142,7 @@ const scanPct = computed(() => {
             </template>
             <template v-else-if="updateState === 'available'">
               <span class="text-primary">有新版本 {{ latest }}</span>
-              <span class="text-muted-foreground">—— 去下载页挑对应的安装包。</span>
+              <span class="text-muted-foreground">—— 点下方「下载」直接获取。</span>
             </template>
             <template v-else-if="updateState === 'up-to-date'">
               <span class="text-muted-foreground">已是最新。</span>
@@ -128,25 +152,72 @@ const scanPct = computed(() => {
             </template>
           </p>
 
+          <!-- 下载进度：总量拿不到时只显示已接收量（进度条由按钮态与百分比承担） -->
+          <p v-if="dlState === 'downloading'" class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+            下载中… 已接收 <ByteValue class="tabular-nums" :bytes="dlProgress?.received ?? 0" />
+            <template v-if="dlProgress?.total">
+              / <ByteValue class="tabular-nums" :bytes="dlProgress.total" />
+              <span class="tabular-nums">（{{ dlPct }}%）</span>
+            </template>
+          </p>
+          <p v-else-if="dlState === 'done' && dlPath" class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+            已下载并打开：<span class="tabular-nums">{{ dlPath }}</span>
+          </p>
+          <p v-else-if="dlMessage" class="mt-2 text-[11px] leading-relaxed text-destructive">
+            下载失败：{{ dlMessage }}
+          </p>
+
           <div class="mt-3 flex items-center gap-1.5">
             <Button
               variant="outline"
               size="xs"
-              :disabled="updateState === 'checking'"
+              :disabled="updateState === 'checking' || dlState === 'downloading'"
               @click="checkNow"
             >
               <RefreshCw />
               检查更新
             </Button>
-            <Button v-if="updateState === 'available'" size="xs" @click="openDownload">
+            <Button
+              v-if="updateState === 'available' && dlState !== 'downloading'"
+              size="xs"
+              @click="downloadUpdate"
+            >
               <Download />
-              前往下载页
+              下载 {{ latest }}
             </Button>
           </div>
           <p class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-            检查只请求一次 api.github.com 拿最新 tag，不带本机任何数据。
-            macOS 的安装包没有 Apple 开发者签名，双击后若被系统拦下，右键→打开即可。
+            安装包下载到「下载」文件夹并自动打开。检查与下载都不经浏览器：检查只请求
+            api.github.com，安装包从 GitHub 的发布资产直取，都不带本机任何数据。
+            macOS 的安装包没有 Apple 开发者签名，双击后若被系统拦下，右键→打开即可；
+            自动打开失败或没有本平台的包时，可<button
+              class="rounded text-primary hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              @click="openDownload"
+            >前往下载页</button>手动获取。
           </p>
+        </section>
+
+        <!-- ============ 项目 ============ -->
+        <section class="border-t border-border pt-6">
+          <h2 class="text-[13px] font-medium">项目</h2>
+          <p class="mt-1 leading-relaxed text-muted-foreground">
+            Stacktake 以 MIT 协议开源，源码、issue 与协议文本都在 GitHub 上。
+            下面几个链接交给系统浏览器打开，应用不为此多发任何请求。
+          </p>
+          <div class="mt-3 flex items-center gap-1.5">
+            <Button variant="outline" size="xs" @click="openLink(REPO_URL)">
+              <Code />
+              仓库主页
+            </Button>
+            <Button variant="ghost" size="xs" class="text-muted-foreground" @click="openLink(ISSUES_URL)">
+              <MessageSquare />
+              反馈问题
+            </Button>
+            <Button variant="ghost" size="xs" class="text-muted-foreground" @click="openLink(LICENSE_URL)">
+              <Scale />
+              开源协议
+            </Button>
+          </div>
         </section>
       </div>
     </ScrollArea>

@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-// 版本号改由 useUpdate 提供：它启动时顺手拿一次 getVersion() 用来和远端 tag 比对，
-// 侧栏与设置页共用同一份，不各调一次。
 // 侧栏不带图标（U15 拍板）：此前 IconPark 分组图标 + Lucide 控件图标两套并排，
 // 通用线性图标铺满侧栏是「Figma 稿 / 生成式界面」的指纹，两套混用更让谁都不像立场。
 // 纸账本的目录页就是文字 + 右对齐的数——分组名本身已经足够区分，图标不承载信息。
@@ -20,7 +18,9 @@ const route = useRoute();
 const router = useRouter();
 const { groups, current, activeId, boot } = useAssets();
 const { theme } = useTheme();
-const { state: updateState, latest, checkOnBoot, openDownload } = useUpdate();
+// 版本号与更新状态都由 useUpdate 提供：它启动时顺手拿一次 getVersion() 用来和
+// 远端 tag 比对，侧栏与设置页共用同一份，不各调一次。
+const { state: updateState, version, latest, checkOnBoot } = useUpdate();
 
 /** 在设置页时侧栏不点亮任何分组，URL 同步 watch 也不纠偏（否则一进设置页
  *  就被 replace 回 /assets/overview——activeId 为 null 时 current 回落第一组）。 */
@@ -215,24 +215,14 @@ onUnmounted(() => {
         </nav>
       </ScrollArea>
 
-      <div class="px-3 pb-1.5 text-[11px] leading-relaxed text-muted-foreground">
-        <!-- 只有真查出新版本才出现。启动那次检查是静默的：断网、仓库还没有
-             release、读不到版本号，一律不显示这一行。点了是打开下载页，
-             不在应用内下载安装（B 方案，不做自动更新）。 -->
-        <button
-          v-if="updateState === 'available'"
-          class="mb-0.5 flex items-center gap-1.5 rounded text-[11px] text-primary hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          :title="`有新版本 ${latest}，点击前往下载页`"
-          @click="openDownload"
-        >
-          <span class="size-1.5 shrink-0 rounded-full bg-primary" />
-          有更新 {{ latest }}
-        </button>
-      </div>
       <!-- 设置：钉在侧栏底部、不进 ScrollArea——分组多到能滚时也不能跟着滚走。
            早年挂在状态栏右侧，2026-10-19 按用户要求挪回侧栏：它是「整个应用」的入口，
            和「数据更新于」这种当前视图的状态同栏，等于每换一个分组就要重新找一遍。
-           选中态与分组行同一套规则（pill + 加粗），切换过来一眼看得出在哪。 -->
+           选中态与分组行同一套规则（pill + 加粗），切换过来一眼看得出在哪。
+           版本号并入按钮（2026-10-21 用户拍板）：撤掉独立的「有更新」行，
+           有更新时把显示的版本号换成新版本 + 小点，点击仍进设置页——侧栏只做
+           状态展示，下载动作在设置页的「更新」节（一次点击一个职责）。
+           启动那次检查是静默的：断网、没有 release、读不到版本号，这里什么都不显。 -->
       <div class="border-t border-border px-1.5 py-1.5">
         <button
           data-side-key="settings"
@@ -243,9 +233,23 @@ onUnmounted(() => {
               : 'text-muted-foreground hover:bg-muted/60'
           "
           :aria-current="onSettings ? 'page' : undefined"
+          :title="
+            updateState === 'available'
+              ? `有新版本 ${latest}，前往设置页下载`
+              : version
+                ? `当前版本 v${version}`
+                : undefined
+          "
           @click="router.push('/settings')"
         >
           <span class="min-w-0 flex-1 truncate text-[13px]">设置</span>
+          <template v-if="updateState === 'available'">
+            <span class="size-1.5 shrink-0 rounded-full bg-primary" />
+            <span class="shrink-0 text-[11px] tabular-nums text-primary">{{ latest }}</span>
+          </template>
+          <span v-else-if="version" class="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+            v{{ version }}
+          </span>
         </button>
       </div>
       <span ref="markerEl" class="side-marker" style="opacity: 0" aria-hidden="true" />
