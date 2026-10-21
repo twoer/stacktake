@@ -1,6 +1,6 @@
 {
   "name": "stacktake",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "description": "本机资产清点台账",
   "license": "MIT",
