@@ -68,13 +68,28 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ad-hoc 签名身份（值就是 "-"）：让 Tauri 打包时对 .app 做
+          # `codesign --force -s -` 的 bundle 级封存。不配它时产物只有主
+          # 二进制上的 linker adhoc 签名、没有 _CodeSignature/CodeResources，
+          # `codesign --verify --deep --strict` 报 "code has no resources
+          # but signature indicates they must be present"——Gatekeeper 对
+          # **签名无效**（区别于未签名）的回应是「已损坏」对话框：只有
+          # 取消/移到废纸篓，**没有绕过入口**（2026-10-21 v0.1.2 实测，
+          # 本地 tauri build 产物同样无效，不是 CI 事故）。
+          # 封存后签名结构有效（实测 valid on disk + Sealed Resources）；
+          # adhoc 仍不是受信身份，浏览器下载后 Gatekeeper 的弹窗形态
+          # （静默通过 / 可绕过的「未验证开发者」）未经真机验证——
+          # 彻底免弹窗要 Developer ID + 公证，见文件末尾「刻意没做」。
+          # 值为 "-" 时 Tauri 跳过 DMG 自身签名（tauri#12288），无副作用；
+          # Windows job 不走 macOS 打包路径，这个变量在那边空转。
+          APPLE_SIGNING_IDENTITY: "-"
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Stacktake ${{ github.ref_name }}
-          # 出草稿而不是直接发布：产物没有 Apple Developer ID 签名，未签名的
-          # .app/.dmg 在 macOS 上会被 Gatekeeper 拦（用户要右键→打开）。
-          # 发布前留一步人工确认，别让一个 tag 直接推到用户面前。
-          # 确认没问题就去 GitHub 上点 Publish release。
+          # 出草稿而不是直接发布：macOS 产物是 ad-hoc 签名、无 Developer ID
+          # 公证，首次打开可能仍有 Gatekeeper 提示。发布前留一步人工确认，
+          # 别让一个 tag 直接推到用户面前。确认没问题就去 GitHub 上点
+          # Publish release。
           releaseDraft: true
           prerelease: false
           # 显式指定 --bundles，不靠 tauri.conf.json 的 "all" 推断：
@@ -89,8 +104,9 @@ jobs:
       #    B 方案只做「有新版本就提示 + 打开下载页」，不做应用内自动更新，
       #    因此不需要 latest.json，也不需要那把丢了就永久无法给存量用户
       #    推送更新的 minisign 私钥。
-      # 2. 没有 Apple 签名/公证的环境变量：本机没有 Developer ID（拍板时确认）。
-      #    要加就把 APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD /
-      #    APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
-      #    六个 secret 配齐，那是另一把刀。
+      # 2. APPLE_SIGNING_IDENTITY 只到 ad-hoc（见上）：bundle 封存有了，
+      #    但仍不是受信身份。Developer ID + 公证要把 APPLE_CERTIFICATE /
+      #    APPLE_CERTIFICATE_PASSWORD（导入 p12）、APPLE_SIGNING_IDENTITY
+      #    （真实证书名）、APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID（公证）
+      #    六个 secret 配齐，¥688/年，那是另一把刀。本机没有 Developer ID。
       # 3. 没有 Linux job，理由见上方矩阵注释。

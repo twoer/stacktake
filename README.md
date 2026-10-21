@@ -6,14 +6,16 @@
 
 ## 装
 
-目前**没有预编译安装包**——0.1.0 还没发布，Releases 页是空的。从源码构建：
+从 [Releases](https://github.com/twoer/stacktake/releases) 下载最新版（macOS arm64 DMG / Windows x64 exe）；也可以从源码构建：
 
 ```bash
 npm install
 npm run tauri build
 ```
 
-产物在 `src-tauri/target/release/bundle/`。未签名构建在 macOS 首次打开会提示无法验证开发者，右键 → 打开。
+产物在 `src-tauri/target/release/bundle/`。
+
+**macOS 首次打开**：产物是 ad-hoc 签名（无 Developer ID 公证），浏览器下载后 Gatekeeper 可能拦截。遇到「已损坏」提示（该对话框只有取消/移到废纸篓、没有打开入口）时，对 DMG 执行一次 `xattr -cr <文件>` 清除下载隔离标记，再重新挂载拖拽即可。应用内更新（设置页里检查并下载）不走浏览器隔离，不受此影响。
 
 ## 它清点什么
 
