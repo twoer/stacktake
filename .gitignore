@@ -14,7 +14,6 @@ dist-ssr
 
 # Editor directories and files
 .vscode/*
-!.vscode/extensions.json
 .idea
 .DS_Store
 *.suo
@@ -41,8 +40,19 @@ docs/backlog.md
 docs/backlog-archive.md
 docs/archive/
 docs/evidence/
+# 设计记录与 UI 审查记录：只对按刀推进的开发流程有用，对外是把过程稿摊开
+docs/ai-tools-scanner-plan.md
+docs/ui-deai-plan.md
+docs/ui-review-2026-10-18.md
 
-# logo 的过程产物：AI 生成的候选图、备份图标与候选方案（成品在 logo/final 与 src-tauri/icons）
+# logo 的过程产物：AI 生成的候选图、备份图标、候选尺寸图与候选方案
+# （成品在 logo/final 与 src-tauri/icons，生成脚本 logo/gen.mjs 保留以便复现）
 logo/ai/
 logo/backup-icons/
 logo/proposal-a/
+logo/png/
+
+# 本机 UI 原型：数据由 prototype*/generate-data.mjs 从本机扫描缓存生成，
+# 生成的 data.js 含全部仓库名与真实路径，对外既跑不起来也不该看到
+prototype/
+prototype-ledger/
