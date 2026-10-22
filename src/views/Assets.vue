@@ -34,6 +34,7 @@ import { useAssets } from "@/composables/useAssets";
 import { useTheme } from "@/composables/useTheme";
 import { captureRowTops, playRowFlip } from "@/lib/motion";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import ByteValue from "@/components/ByteValue.vue";
 import ScanBar from "@/components/ScanBar.vue";
 
@@ -170,14 +171,23 @@ function closeMenu() {
   menu.value = null;
 }
 
-async function onReveal(item: Item) {
-  closeMenu();
+/**
+ * 定位一个路径。**只 reveal、不 open**（见文件头「行动作」那段与 Rust 侧
+ * `reveal_path`）：产物明细是目录，看着「打开」更自然，但 open 会执行路径
+ * 指向的东西，那条边界不能因为这里看着安全就破。
+ */
+async function revealAt(path: string) {
   try {
-    await invoke("reveal_path", { path: item.path });
+    await invoke("reveal_path", { path });
   } catch (e) {
     // 后端会把「路径已不存在，重扫一次」原样给出来，这里不翻译
     toast.error(String(e));
   }
+}
+
+async function onReveal(item: Item) {
+  closeMenu();
+  await revealAt(item.path);
 }
 
 async function onCopyPath(item: Item) {
@@ -255,6 +265,56 @@ function askClean(item: Item) {
 const artifactTarget = ref<Item | null>(null);
 
 /**
+ * 弹窗里勾中的产物目录（存的是 detail 里的**相对路径**，与检查器「产物明细」
+ * 同一套标识）。打开弹窗时全选——保持「清理产物 = 清这个仓库的全部产物」的
+ * 旧语义，取消勾选才收缩范围。空集合时确认按钮禁用。
+ */
+const artifactPicked = ref<Set<string>>(new Set());
+
+/** 弹窗列表：与检查器同一份解析结果，只是换了目标条目。 */
+const artifactDialogRows = computed(() => artifactRowsOf(artifactTarget.value));
+
+/** 已勾目录的估算合计（人类可读串反推字节，只用于即时预览）。 */
+const artifactPickedBytes = computed(() =>
+  artifactDialogRows.value.reduce(
+    (s, r) =>
+      s +
+      (r.kind === "row" && artifactPicked.value.has(r.rel) ? bytesFromParts(r.num, r.unit) : 0),
+    0,
+  ),
+);
+
+const artifactAllPicked = computed(
+  () =>
+    artifactDialogRows.value.filter((r) => r.kind === "row").length > 0 &&
+    artifactDialogRows.value
+      .filter((r) => r.kind === "row")
+      .every((r) => r.kind === "row" && artifactPicked.value.has(r.rel)),
+);
+
+/** 部分勾选：给「全选」那个框走 indeterminate（半选）态，比 unchecked 更诚实。 */
+const artifactSomePicked = computed(() => {
+  const rows = artifactDialogRows.value.filter((r) => r.kind === "row");
+  const n = rows.filter((r) => r.kind === "row" && artifactPicked.value.has(r.rel)).length;
+  return n > 0 && n < rows.length;
+});
+
+function toggleAllArtifacts(on: boolean) {
+  artifactPicked.value = new Set(
+    on ? artifactDialogRows.value.filter((r) => r.kind === "row").map((r) => r.rel) : [],
+  );
+}
+
+/** 单行勾选：reka-ui 的 v-model 只出 boolean | "indeterminate"，不认 Set——
+ *  显式收敛成 Set 增删，Set 仍是唯一真相（确认时从它展开 targets）。 */
+function toggleArtifact(rel: string, on: boolean) {
+  const next = new Set(artifactPicked.value);
+  if (on) next.add(rel);
+  else next.delete(rel);
+  artifactPicked.value = next;
+}
+
+/**
  * 「清理产物」的判据与 `canClean` 是两个动作：整仓删除看 `cleanable`
  * （复核未推送/改动），产物清理看 `metrics.artifacts`（复核白名单）。
  * 没有 `supports_clean` 的组、非宿主机路径一律不给。
@@ -265,6 +325,11 @@ function canCleanArtifacts(item: Item): boolean {
 
 function askCleanArtifacts(item: Item) {
   if (!canCleanArtifacts(item)) return;
+  artifactPicked.value = new Set(
+    artifactRowsOf(item)
+      .filter((r) => r.kind === "row")
+      .map((r) => r.rel),
+  );
   artifactTarget.value = item;
 }
 
@@ -332,10 +397,19 @@ async function confirmCleanArtifacts() {
   if (!item) return;
   const groupId = current.value?.id;
   if (!groupId) return;
+  // 空勾选不发请求：服务端会把空数组当「什么都没选中」拒掉，前端先挡一道
+  const targets = [...artifactPicked.value];
+  if (targets.length === 0) return;
   artifactTarget.value = null;
   try {
     const r = await invoke<CleanResult>("clean_items", {
-      plan: { group_id: groupId, item_ids: [item.id], confirmed: true, scope: "artifacts" },
+      plan: {
+        group_id: groupId,
+        item_ids: [item.id],
+        confirmed: true,
+        scope: "artifacts",
+        artifact_targets: targets,
+      },
     });
     await applyCleanResult(r);
   } catch (e) {
@@ -429,6 +503,69 @@ onUnmounted(() => {
 /** detail 的键名带 `N. ` 排序前缀（Rust 侧为保证 HashMap 顺序加的），展示时去掉。 */
 function detailLabel(key: string): string {
   return key.replace(/^\d+\.\s*/, "");
+}
+
+/** 产物明细在 Rust 侧是**单键多行字符串**（`{相对路径} · {体积}` 逐行，见
+ * `repos.rs` 的 `MAX_DETAIL_ROWS` 那段）。这里拆成结构化行再渲染。
+ *
+ * 为什么不改数据结构：detail 是 `HashMap<String, String>`，动它要 SCHEMA_VERSION
+ * +1，清理弹窗那条「构建产物」与 `tests.rs` 的明细断言也得跟着改。而这块缺的
+ * 全是排印——一条一行、体积右对齐、末段目录名恒完整——拆一次字符串就能达到，
+ * 不值得动缓存契约。
+ */
+type ArtifactRow =
+  | { kind: "row"; rel: string; dir: string; base: string; num: string; unit: string }
+  | { kind: "note"; text: string };
+
+/** Rust 侧拼出来的键名（无 `N. ` 前缀，但取值仍按 detailLabel 比对以防将来加）。 */
+const ARTIFACT_DETAIL = "产物明细";
+
+/** 弹窗勾选用：`human_bytes` 的「值 + 单位」还原成字节，只用于估算合计。
+ *  真实腾出量以 `CleanResult.freed_bytes` 为准——这里是勾选时的即时预估。 */
+const BYTE_UNITS: Record<string, number> = {
+  B: 1,
+  KB: 1024,
+  MB: 1024 ** 2,
+  GB: 1024 ** 3,
+  TB: 1024 ** 4,
+};
+
+function bytesFromParts(num: string, unit: string): number {
+  const k = BYTE_UNITS[unit];
+  const v = Number.parseFloat(num);
+  return k && Number.isFinite(v) ? Math.round(v * k) : 0;
+}
+
+function parseArtifactRows(text: string): ArtifactRow[] {
+  return text
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map<ArtifactRow>((line) => {
+      // 体积是最后一段：路径里不会有 " · "（Rust 侧就是这么拼的）。
+      // 拆不到体积的行是汇总句（「…其余 N 个目录略」），原样留灰字。
+      const cut = line.lastIndexOf(" · ");
+      if (cut < 0) return { kind: "note", text: line };
+      const rel = line.slice(0, cut);
+      const size = line.slice(cut + 3).trim();
+      // 体积不再转回字节喂 ByteValue：`human_bytes` 已经定过精度，来回换算会让
+      // 1004.5 MB 变成 1 GB。直接拆「值 / 单位」两半，排印规则与 ByteValue 一致。
+      const sp = size.lastIndexOf(" ");
+      const num = sp < 0 ? size : size.slice(0, sp);
+      const unit = sp < 0 ? "" : size.slice(sp + 1);
+      // 末段恒完整、父路径优先被截：6 个同名 node_modules 靠父路径区分，
+      // 截父路径的损失远小于把目录名截成 "node_m…"。
+      // **两种分隔符都要认**：Windows 上 `strip_prefix` 出来的相对路径是
+      // `apps\desktop\node_modules`，只认 `/` 会让整串变成一个 base、层级全丢。
+      const slash = Math.max(rel.lastIndexOf("/"), rel.lastIndexOf("\\"));
+      return {
+        kind: "row",
+        rel,
+        dir: slash < 0 ? "" : rel.slice(0, slash + 1),
+        base: slash < 0 ? rel : rel.slice(slash + 1),
+        num,
+        unit,
+      };
+    });
 }
 
 function cell(it: Item, key: string, temporal?: boolean): string {
@@ -824,6 +961,33 @@ const selectedRow = computed(() => {
 const inspectorKey = computed(
   () => selectedRow.value?.id ?? `group:${current.value?.id ?? ""}`,
 );
+
+/** detail 里除「产物明细」之外的键——它走独立子表，不再当「label + 一段文本」渲染。 */
+const detailEntries = computed(() =>
+  Object.entries(selectedRow.value?.detail ?? {}).filter(
+    ([k]) => detailLabel(k) !== ARTIFACT_DETAIL,
+  ),
+);
+
+/** 解析任意条目的产物明细（检查器读选中行、清理弹窗读目标条目）。 */
+function artifactRowsOf(item: Item | null): ArtifactRow[] {
+  const detail = item?.detail;
+  if (!detail) return [];
+  const hit = Object.entries(detail).find(([k]) => detailLabel(k) === ARTIFACT_DETAIL);
+  return hit ? parseArtifactRows(hit[1]) : [];
+}
+
+const artifactRows = computed(() => artifactRowsOf(selectedRow.value));
+
+/**
+ * 产物明细行的绝对路径：明细里是相对路径（Rust 侧 `strip_prefix` 过），根目录取
+ * 当前行的 `path`。产物明细只由 repos 产出，那条 `path` 恒是宿主机绝对路径
+ * （扫描根目录来自 `default_roots()`，基于 home），所以这里不再过一遍 `isLocalPath`。
+ */
+function artifactPath(rel: string): string {
+  const root = selectedRow.value?.path ?? "";
+  return /[\\/]$/.test(root) ? root + rel : `${root}/${rel}`;
+}
 
 const reclaimTotal = computed(() =>
   current.value ? groupReclaimable(current.value) : 0,
@@ -1363,21 +1527,70 @@ async function onRescan() {
 
           <template v-if="selectedRow.detail">
             <div class="mt-4 text-[11px] font-semibold text-muted-foreground">明细</div>
-            <dl class="mt-1 space-y-1">
+            <dl v-if="detailEntries.length" class="mt-1 space-y-1">
               <!-- Rust 侧给 detail 的键加了 `N. ` 前缀是为了压住 HashMap 的不确定顺序，
                    这个编号是给序列化用的，不该出现在界面上 -->
-              <div v-for="(v, k) in selectedRow.detail" :key="k" class="flex gap-2">
-                <dt class="w-16 shrink-0 truncate text-xs text-muted-foreground" :title="detailLabel(k)">
+              <!-- items-baseline 必须有：12px 汉字标签与 11px 等宽值在 items-stretch 下
+                   行盒起点差 1px，基线就错开约 1.5px——「构建产物」「最后提交」这些
+                   标签会看着比值的首行矮半口气。指标区一直是 baseline，这里之前漏了。 -->
+              <div v-for="[k, v] in detailEntries" :key="k" class="flex items-baseline gap-2">
+                <!-- 标签跟值同为 11px：这里的中文标签配的是 11px 等宽值，12px 汉字的
+                     字面占满 em 框、11px 拉丁只占 x-height，基线一对齐汉字就往下沉 1px
+                     （实测「最后提交」比 `feat(` 低 4 个物理像素）。同字号后墨迹上下沿
+                     完全重合。指标区两侧都是 12px，所以那边保持 text-xs。 -->
+                <dt class="w-16 shrink-0 truncate text-[11px] text-muted-foreground" :title="detailLabel(k)">
                   {{ detailLabel(k) }}
                 </dt>
                 <!-- break-words 而不是 break-all：后者会在单词中间断行
                      （"dist, node_modules, target" 断成 "targe t"），前者优先在空格断，
                      无空格的长路径 / URL 仍能在容器边缘换行。
-                     whitespace-pre-line 给「产物明细」的多行值用（repos 的产物
-                     逐目录一行收在单键里，detail 是 HashMap、序列化序随机） -->
+                     whitespace-pre-line 留给还有多行值的键（产物明细已挪到下面独立子表） -->
                 <dd class="min-w-0 whitespace-pre-line break-words font-mono text-[11px] text-foreground">{{ v }}</dd>
               </div>
             </dl>
+
+            <!-- 产物明细：占满整条检查器宽度的子表，不再走「64px label + 一段等宽文本」。
+                 那条形态在 228px 里只剩 156px 给值，`apps/desktop/.output/server/node_modules
+                 · 64.1 MB` 必然折行、体积与条目分家，break-words 还会把 node_modules 劈成
+                 "node_m / odules"。改成一条一行：左路径（父段灰、末段黑、父段优先截断），
+                 右体积右对齐——纵向一眼能比大小。 -->
+            <template v-if="artifactRows.length">
+              <!-- 可点提示只在标题行给一个图标，行内不再各挂一个：228px 里每行多 16px，
+                   父路径就从 90px 掉到 68px（12 个字符），`apps/desktop/.output/server/
+                   node_modules` 与 `apps/desktop/node_modules` 会在行内截成同一个串。
+                   标题这一个图标 + 整行 hover 淡底，代价为零。 -->
+              <div class="mt-4 flex items-center gap-1.5">
+                <span class="text-[11px] font-semibold text-muted-foreground">产物明细</span>
+                <FolderOpen
+                  class="size-3 shrink-0 text-muted-foreground"
+                  :title="`${revealLabel}：点任意一行`"
+                />
+              </div>
+              <ul class="mt-1">
+                <li v-for="(r, i) in artifactRows" :key="i" class="leading-[18px]">
+                  <!-- 整行是按钮：点一下在访达 / 资源管理器里定位这个产物目录 -->
+                  <button
+                    v-if="r.kind === 'row'"
+                    type="button"
+                    class="flex w-full items-baseline gap-2 rounded-sm text-left px-1 transition-colors duration-[90ms] hover:bg-[var(--ink-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    :title="`${revealLabel} · ${r.rel}`"
+                    @click="revealAt(artifactPath(r.rel))"
+                  >
+                    <span class="flex min-w-0 flex-1 items-baseline font-mono text-[11px]">
+                      <!-- mr-0.5：截断后的省略号会与末段贴成一个词（".output/serv…node_modules"）。
+                           margin 而不是 padding——父路径为空时整段不渲染，末段才不会平白左移 -->
+                      <span v-if="r.dir" class="mr-0.5 min-w-0 truncate text-muted-foreground">{{ r.dir }}</span>
+                      <span class="shrink-0 text-foreground">{{ r.base }}</span>
+                    </span>
+                    <span class="shrink-0 whitespace-nowrap tabular-nums">
+                      <span class="text-xs font-medium">{{ r.num }}</span>
+                      <span class="ml-0.5 text-[11px] font-normal">{{ r.unit }}</span>
+                    </span>
+                  </button>
+                  <span v-else class="block text-[11px] text-muted-foreground">{{ r.text }}</span>
+                </li>
+              </ul>
+            </template>
           </template>
         </template>
 
@@ -1462,7 +1675,11 @@ async function onRescan() {
         >
           数据更新于 {{ formatAgo(cachedAt) }}
         </span>
-        <span v-if="statusReclaim > 0" class="tabular-nums">
+        <span
+          v-if="statusReclaim > 0"
+          class="tabular-nums"
+          title="可回收为估算值：含共享硬链接的目录（如 Rust 的 target/）可能偏高"
+        >
           可回收
           <ByteValue class="text-reclaim" :bytes="statusReclaim" />
         </span>
@@ -1570,6 +1787,8 @@ async function onRescan() {
             </template>
             服务端会复核这条仍在可清理白名单内。
           </template>
+          <br />
+          <span class="opacity-70">可回收为估算值：含共享硬链接的目录（如 Rust 的 target/）可能偏高。</span>
         </p>
         <div class="mt-4 flex justify-end gap-2">
           <Button data-dialog-cancel size="xs" variant="outline" @click="cleanTarget = null">取消</Button>
@@ -1591,7 +1810,7 @@ async function onRescan() {
       >
         <p class="text-[13px] font-medium">清理构建产物</p>
         <p class="mt-2 text-xs leading-relaxed text-muted-foreground">
-          将把该仓库内的构建产物目录（node_modules、target 等）移入废纸篓。
+          将把勾选的 <span class="text-foreground">{{ artifactPicked.size }} 个</span>构建产物目录移入废纸篓。
           <span class="text-foreground">源码与 .git 不受影响</span
           >，重新构建或安装依赖时会再次生成。
         </p>
@@ -1606,23 +1825,82 @@ async function onRescan() {
               {{ artifactTarget.path }}
             </dd>
           </div>
-          <div class="flex items-baseline justify-between gap-2">
-            <dt class="shrink-0 text-muted-foreground">可腾出</dt>
-            <dd><ByteValue :bytes="artifactBytes(artifactTarget)" /></dd>
-          </div>
-          <div v-if="artifactTarget.detail?.['构建产物']" class="flex items-baseline justify-between gap-2">
-            <dt class="shrink-0 text-muted-foreground">明细</dt>
-            <dd class="min-w-0 truncate" :title="artifactTarget.detail['构建产物']">
-              {{ artifactTarget.detail["构建产物"] }}
-            </dd>
-          </div>
         </dl>
+
+        <!-- 逐条勾选（与检查器「产物明细」同一份数据、同一套排印：父路径灰、
+             末段黑、体积右对齐）。默认全选；取消勾选的目录本次不动。行数封顶
+             与 Rust 侧 MAX_DETAIL_ROWS 一致，超出的走「…其余 N 个略」灰字。 -->
+        <div class="mt-3">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-[11px] font-semibold text-muted-foreground">产物目录</span>
+            <label class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Checkbox
+                :model-value="artifactAllPicked ? true : artifactSomePicked ? 'indeterminate' : false"
+                @update:model-value="(v) => toggleAllArtifacts(v === true)"
+              />
+              全选
+            </label>
+          </div>
+          <ul class="mt-1 max-h-[188px] overflow-y-auto rounded-md bg-muted/50 p-1.5">
+            <li v-for="(r, i) in artifactDialogRows" :key="i" class="leading-[18px]">
+              <!-- items-center 不用 baseline：reka-ui 的框是 button，勾存在与否会改变
+                   它的合成基线（mark 在 = 末段底边，不在 = 自身底边），勾选态会跳 3.25px；
+                   center 与 mark 脱钩，且不依赖浏览器对 button 字体的基线合成，跨平台一致。
+                   12px 盒子在 18px 行高里 flex 居中即对齐，别再补 translate——那是旧版
+                   原生 input（items-baseline + y-1px）的认可位，搬过来会把框抬高 1px。 -->
+              <label
+                v-if="r.kind === 'row'"
+                class="flex items-center gap-2 rounded-sm px-1 hover:bg-[var(--ink-hover)]"
+              >
+                <Checkbox
+                  :model-value="artifactPicked.has(r.rel)"
+                  @update:model-value="(v) => toggleArtifact(r.rel, v === true)"
+                />
+                <span class="flex min-w-0 flex-1 items-baseline font-mono text-[11px]">
+                  <span v-if="r.dir" class="mr-0.5 min-w-0 truncate text-muted-foreground">{{ r.dir }}</span>
+                  <!-- 没勾选的行整行退灰（末段也退）：本次不清的目录该往后退，
+                       但只退到 muted——父路径本来就是这档灰，不再往上加透明度，
+                       免得 11px 小字的对比度掉到 4.5:1 以下 -->
+                  <span
+                    class="shrink-0"
+                    :class="artifactPicked.has(r.rel) ? 'text-foreground' : 'text-muted-foreground'"
+                    >{{ r.base }}</span
+                  >
+                </span>
+                <span
+                  class="shrink-0 whitespace-nowrap tabular-nums"
+                  :class="artifactPicked.has(r.rel) ? '' : 'text-muted-foreground'"
+                >
+                  <span class="text-[11px] font-medium">{{ r.num }}</span>
+                  <span class="ml-0.5 text-[11px] font-normal">{{ r.unit }}</span>
+                </span>
+              </label>
+              <span v-else class="px-1 text-[11px] text-muted-foreground">{{ r.text }}</span>
+            </li>
+          </ul>
+        </div>
+
         <p class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
           不检查未推送提交或未提交改动——清产物不碰源码。服务端会按白名单重新找出产物目录，以点击那一刻为准；藏有 Git 仓库的产物目录会被拒绝。
+          <br />
+          <span class="opacity-70">已选为估算值：含共享硬链接的目录可能偏高。</span>
         </p>
-        <div class="mt-4 flex justify-end gap-2">
-          <Button data-dialog-cancel size="xs" variant="outline" @click="artifactTarget = null">取消</Button>
-          <Button size="xs" variant="destructive" @click="confirmCleanArtifacts">确认移入废纸篓</Button>
+        <div class="mt-4 flex items-center justify-between gap-2">
+          <span class="text-[11px] tabular-nums text-muted-foreground">
+            已选 {{ artifactPicked.size }} 个 · 约
+            <span class="text-foreground">{{ formatBytes(artifactPickedBytes) }}</span>
+          </span>
+          <div class="flex gap-2">
+            <Button data-dialog-cancel size="xs" variant="outline" @click="artifactTarget = null">取消</Button>
+            <Button
+              size="xs"
+              variant="destructive"
+              :disabled="artifactPicked.size === 0"
+              @click="confirmCleanArtifacts"
+            >
+              确认移入废纸篓
+            </Button>
+          </div>
         </div>
       </div>
     </div>

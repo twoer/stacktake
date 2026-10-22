@@ -25,7 +25,7 @@ mod harness {
     use crate::scan::platform::{self, Platform};
     use crate::scan::repos::{
         RepoScanner, artifact_rules_for_test, find_artifact_dirs, human_bytes,
-        is_artifact_dir_under,
+        is_artifact_dir_under, resolve_artifact_target,
     };
     use crate::scan::ssh::SshScanner;
     use crate::scan::ssh::{
@@ -1442,6 +1442,7 @@ Host gamma
             item_ids: ids,
             confirmed,
             scope: CleanScope::Repo,
+            artifact_targets: None,
         };
 
         let foreign_root = root.join("foreign-tool");
@@ -4106,6 +4107,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             item_ids: vec![repo.display().to_string()],
             confirmed: false,
             scope: crate::scan::CleanScope::Repo,
+            artifact_targets: None,
         };
 
         let r = scanner.clean_repo(&plan);
@@ -4156,6 +4158,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             item_ids: vec![repo.display().to_string()],
             confirmed: true,
             scope: crate::scan::CleanScope::Repo,
+            artifact_targets: None,
         };
 
         let r = scanner.clean_repo(&plan);
@@ -4276,6 +4279,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             item_ids: vec![repo.display().to_string()],
             confirmed: true,
             scope: crate::scan::CleanScope::Repo,
+            artifact_targets: None,
         };
 
         let r = scanner.clean_repo(&plan);
@@ -4556,6 +4560,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             item_ids: vec![repo.display().to_string()],
             confirmed: false,
             scope: crate::scan::CleanScope::Artifacts,
+            artifact_targets: None,
         };
         let r = scanner.clean_artifacts(&plan);
         assert!(r.succeeded.is_empty());
@@ -4581,6 +4586,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             item_ids: vec![dir.display().to_string()],
             confirmed: true,
             scope: crate::scan::CleanScope::Artifacts,
+            artifact_targets: None,
         };
         let r = scanner.clean_artifacts(&plan);
         assert!(r.succeeded.is_empty(), "不该成功任何一项");
@@ -4605,6 +4611,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             item_ids: vec![repo.display().to_string()],
             confirmed: true,
             scope: crate::scan::CleanScope::Artifacts,
+            artifact_targets: None,
         };
         let r = scanner.clean_artifacts(&plan);
         assert!(r.succeeded.is_empty());
@@ -4634,6 +4641,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             item_ids: vec![repo.display().to_string()],
             confirmed: true,
             scope: crate::scan::CleanScope::Artifacts,
+            artifact_targets: None,
         };
         let r = scanner.clean_artifacts(&plan);
         assert!(r.succeeded.is_empty(), "藏着仓库的产物不许删");
@@ -4736,5 +4744,204 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         );
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `artifact_targets` 反序列化：缺省 None（= 全选语义）、数组正常解析、
+    /// 类型不对必须拒——范围字段打错不许悄悄退化成「清全部」。
+    #[test]
+    fn repos_clean_plan_artifact_targets_deserialization() {
+        let base =
+            r#"{"group_id":"repos","item_ids":["/tmp/x"],"confirmed":true,"scope":"artifacts""#;
+        let missing: crate::scan::CleanPlan = serde_json::from_str(&format!("{base}}}")).unwrap();
+        assert_eq!(missing.artifact_targets, None);
+
+        let picked: crate::scan::CleanPlan = serde_json::from_str(&format!(
+            r#"{base},"artifact_targets":["node_modules","target"]}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            picked.artifact_targets,
+            Some(vec!["node_modules".to_string(), "target".to_string()])
+        );
+
+        let bogus: Result<crate::scan::CleanPlan, _> =
+            serde_json::from_str(&format!(r#"{base},"artifact_targets":"node_modules"}}"#));
+        assert!(bogus.is_err(), "字符串不是数组，必须拒");
+    }
+
+    /// 勾选子集的路径解析：仓库内的产物目录放行；`..`、绝对路径、空串、
+    /// 不存在的目录一律 None。光有 `starts_with` 拦不住 `..`（`Path::join`
+    /// 不规范化），所以分量级先挡、软链拒收、canonicalize 再兜一次。
+    #[test]
+    fn repos_resolve_artifact_target_rejects_escapes() {
+        let root = temp_dir("art-resolve");
+        let repo = root.join("repo");
+        let nm = repo.join("node_modules");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(repo.join("package.json"), "{}").unwrap();
+        std::fs::create_dir_all(root.join("outside/node_modules")).unwrap();
+
+        let got = resolve_artifact_target(&repo, "node_modules").expect("仓库内的产物目录该放行");
+        // 必须是原始拼接路径，不是 canonicalize 的结果——删除复核在仓库 id 的
+        // 路径空间里做 starts_with，两边不同空间就永远对不上。
+        assert_eq!(got, nm);
+
+        for bad in [
+            "",
+            "   ",
+            "../outside/node_modules",
+            "node_modules/../../outside",
+            "/etc",
+            "node_modules/./x",
+            "不存在的目录",
+        ] {
+            assert!(
+                resolve_artifact_target(&repo, bad).is_none(),
+                "该拒: {bad:?}"
+            );
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 软链不收：扫描侧（find_artifact_dirs）不跟随软链、账上没有它，
+    /// 勾选侧口径对齐——否则用户会勾到一个「账上不存在」的目录。
+    #[cfg(unix)]
+    #[test]
+    fn repos_resolve_artifact_target_rejects_symlinked_dir() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("art-resolve-symlink");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("package.json"), "{}").unwrap();
+        let real = root.join("elsewhere/node_modules");
+        std::fs::create_dir_all(&real).unwrap();
+        symlink(&real, repo.join("node_modules")).unwrap();
+
+        assert!(resolve_artifact_target(&repo, "node_modules").is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 路径空间一致性（trash::delete 成功路径不进测试，硬约束 4——这里钉住
+    /// 删除复核的前两道判据）：resolve 的返回值必须能直接过
+    /// `d.starts_with(repo)` 与 `is_artifact_dir_under(repo, d)`。此前返回
+    /// canonicalize 结果，与缓存里的仓库根前缀失配——macOS temp 根是
+    /// `/var/...`（/var → /private/var）、Windows canonicalize 带 `\\?\`，
+    /// 复核拒掉一切勾选，整条子集清理链路失效。
+    #[test]
+    fn repos_resolved_artifact_target_passes_deletion_review_predicates() {
+        let root = temp_dir("art-review-space");
+        let repo = root.join("repo");
+        let nm = repo.join("node_modules");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(repo.join("package.json"), "{}").unwrap();
+
+        let got = resolve_artifact_target(&repo, "node_modules").expect("仓库内的产物目录该放行");
+        assert!(
+            got.starts_with(&repo),
+            "resolve 返回值必须与仓库根同一路径空间: {got:?} vs {repo:?}"
+        );
+        assert!(
+            is_artifact_dir_under(&repo, &got),
+            "resolve 返回值必须直接过产物复核: {got:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 勾了却解析不出路径（跑出仓库的）：整项报失败、磁盘不动，
+    /// **不静默跳过**——账面与实际删掉的东西必须逐条对得上（S2）。
+    #[test]
+    fn repos_clean_artifacts_rejects_target_outside_repo() {
+        let repo = git_repo("art-target-escape");
+        let nm = repo.join("node_modules");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("package.json"), "{}").unwrap();
+
+        let scanner = RepoScanner::new(vec![repo.parent().unwrap().to_path_buf()]);
+        let plan = crate::scan::CleanPlan {
+            group_id: "repos".into(),
+            item_ids: vec![repo.display().to_string()],
+            confirmed: true,
+            scope: crate::scan::CleanScope::Artifacts,
+            artifact_targets: Some(vec!["../elsewhere/node_modules".into()]),
+        };
+        let r = scanner.clean_artifacts(&plan);
+        assert!(r.succeeded.is_empty());
+        assert!(
+            r.failed
+                .iter()
+                .any(|f| f.reason.contains("不是本仓库内的产物目录路径")),
+            "failed: {:?}",
+            r.failed
+        );
+        assert!(nm.exists(), "被拒的目录必须原地不动");
+
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
+    /// 勾选了仓库内但**不是产物**的目录（如 src）：照样被白名单复核拒，
+    /// 且不牵连真产物目录。前端选过不算数——服务端按白名单重新判。
+    #[test]
+    fn repos_clean_artifacts_rejects_picked_non_artifact() {
+        let repo = git_repo("art-target-nonart");
+        std::fs::write(repo.join("package.json"), "{}").unwrap();
+        let src = repo.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("index.ts"), "x").unwrap();
+        // 仓库里真的有一个产物目录：证明「未发现」不是靠空仓库蒙过去的
+        let nm = repo.join("node_modules");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("package.json"), "{}").unwrap();
+
+        let scanner = RepoScanner::new(vec![repo.parent().unwrap().to_path_buf()]);
+        let plan = crate::scan::CleanPlan {
+            group_id: "repos".into(),
+            item_ids: vec![repo.display().to_string()],
+            confirmed: true,
+            scope: crate::scan::CleanScope::Artifacts,
+            artifact_targets: Some(vec!["src".into()]),
+        };
+        let r = scanner.clean_artifacts(&plan);
+        assert!(r.succeeded.is_empty());
+        assert!(
+            r.failed.iter().any(|f| f.reason.contains("复核未通过")),
+            "failed: {:?}",
+            r.failed
+        );
+        assert!(src.exists(), "被拒的源码目录必须原地不动");
+        assert!(nm.exists(), "没勾的产物目录不该被牵连");
+
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
+    /// 空勾选：当成「什么都没选中」拒，**不退化成清全部**。
+    #[test]
+    fn repos_clean_artifacts_empty_targets_rejected() {
+        let repo = git_repo("art-target-empty");
+        let nm = repo.join("node_modules");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("package.json"), "{}").unwrap();
+
+        let scanner = RepoScanner::new(vec![repo.parent().unwrap().to_path_buf()]);
+        let plan = crate::scan::CleanPlan {
+            group_id: "repos".into(),
+            item_ids: vec![repo.display().to_string()],
+            confirmed: true,
+            scope: crate::scan::CleanScope::Artifacts,
+            artifact_targets: Some(vec![]),
+        };
+        let r = scanner.clean_artifacts(&plan);
+        assert!(r.succeeded.is_empty());
+        assert!(
+            r.failed[0].reason.contains("未发现可清理的构建产物"),
+            "failed: {:?}",
+            r.failed
+        );
+        assert!(nm.exists(), "空勾选必须一个都不删");
+
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
     }
 }

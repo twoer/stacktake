@@ -315,6 +315,64 @@ html.macos body {
   animation: badge-pop 200ms var(--ease-spring);
 }
 
+/* 复选框皮肤（套在 reka-ui CheckboxRoot 的 button 上）：选中态看 data-state
+   而不是 :checked——reka-ui 渲染的是 <button role="checkbox">，没有 :checked。
+   macOS / Windows 的原生样式是系统强调色的圆角方 + 高光，与「纸账本」的暖纸墨
+   语言完全不是一套东西（AGENTS：配色只出自 style.css token，组件不挑 Tailwind
+   色号）。选中 = 墨底 + 纸色勾；半选 = 墨底 + 纸色横。勾与横都用
+   var(--background)，深浅两套主题下都与墨底互为对比，不用给 .dark 再写一遍。
+   手型光标与焦点环由 base 层统一兜底（硬约束 7）——这里补 cursor /
+   :focus-visible 会和 base 的 ring 叠成双指示器，删过一次，别加回来。 */
+.cb {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--input);
+  border-radius: 2px;
+  background: transparent;
+  transition:
+    background-color 90ms linear,
+    border-color 90ms linear;
+}
+.cb:hover {
+  border-color: var(--foreground);
+}
+.cb[data-state="checked"],
+.cb[data-state="indeterminate"] {
+  background-color: var(--foreground);
+  border-color: var(--foreground);
+}
+/* 勾与横画在 CheckboxIndicator 里（它只在选中/半选时挂载，data-state 自己会带）。
+   对勾用两段 border 拼，不引 SVG data-uri——那里面写不了 CSS 变量，
+   深色主题会变成「白底白勾」。3×5.5 的盒子旋转 45° 后包围盒约 6.5²，
+   由 flex 居中，不用再手算 margin。 */
+.cb-mark {
+  display: block;
+  pointer-events: none;
+}
+.cb-mark[data-state="checked"] {
+  width: 3px;
+  height: 5.5px;
+  border: solid var(--background);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+.cb-mark[data-state="indeterminate"] {
+  width: 6px;
+  height: 0;
+  border-top: 1.5px solid var(--background);
+}
+.cb:disabled {
+  opacity: 0.5;
+}
+
 /* 状态栏「数据更新于」：重扫后脚下划一道线，随即淡出 */
 .updated {
   position: relative;

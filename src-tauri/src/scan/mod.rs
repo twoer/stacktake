@@ -291,6 +291,16 @@ pub struct CleanPlan {
     /// 直接失败——范围打错不该退化成整仓删除。
     #[serde(default)]
     pub scope: CleanScope,
+    /// 产物清理的**子集**：`Some([...])` = 只清这些「相对仓库根」的产物目录，
+    /// `None` = 仓库内全部（默认，也是「全选」的语义）。只在
+    /// `scope = Artifacts` 时有意义。
+    ///
+    /// **前端选过不等于可以删**：传进来的每一条都要过与全量路径完全相同的复核
+    /// （在仓库内、白名单、不藏 Git），见 `repos::resolve_artifact_target` 与
+    /// `RepoScanner::clean_artifacts`。空 `Vec` 会被当成「什么都没选中」拒掉，
+    /// 不会退化成清全部。
+    #[serde(default)]
+    pub artifact_targets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

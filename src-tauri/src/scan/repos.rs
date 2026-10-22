@@ -275,6 +275,47 @@ pub(crate) fn is_artifact_dir_under(root: &Path, p: &Path) -> bool {
     parent_has_marker(parent, rule) && !under_nested_repo(root, p)
 }
 
+/// 把前端勾选的**相对路径**解析回仓库内的产物目录（清理产物弹窗用）。
+///
+/// 四道关，任何一道不过都返回 `None`：
+/// ① 不能为空、不能是绝对路径、不能含 `..` 分量——`Path::join` 不规范化，
+///    `/repo` 拼 `../../etc` 在分量前缀上仍「属于」`/repo`，光靠 `starts_with`
+///    拦不住，必须在拼之前就把 `..` 挡掉；
+/// ② 拼回来仍以仓库根开头（分量前缀）；
+/// ③ 目录本身不是软链——扫描侧（[`find_artifact_dirs`]）不跟随软链，账上
+///    根本没有它，勾选侧也不收；
+/// ④ `canonicalize` 双查——此刻目录必须真的存在，且真实位置（祖先经软链
+///    进来的也算）仍在仓库内，软链逃逸走这条拦。
+///
+/// 通过后返回的是 `repo.join(rel)` 的**原始**路径，不是 canonicalize 的结果：
+/// 删除复核（`d.starts_with(repo)`、[`is_artifact_dir_under`]、
+/// [`under_nested_repo`]）全部工作在仓库 id 的路径空间里，喂 canonicalize
+/// 路径会前缀失配——macOS 的 `/var → /private/var`、Windows 的 `\\?\`
+/// verbatim 前缀都永不相等，复核会拒掉一切勾选。
+///
+/// 返回 `Some` 只代表「路径没跑出仓库」，**不等于可以删**：调用方仍要过
+/// [`is_artifact_dir_under`] 与 [`subtree_contains_git`] 复核，与全量路径同一套。
+pub(crate) fn resolve_artifact_target(repo: &Path, rel: &str) -> Option<PathBuf> {
+    use std::path::Component;
+    let p = Path::new(rel);
+    if rel.trim().is_empty()
+        || p.is_absolute()
+        || p.components().any(|c| matches!(c, Component::ParentDir))
+    {
+        return None;
+    }
+    let d = repo.join(p);
+    if !d.starts_with(repo) || d.is_symlink() {
+        return None;
+    }
+    let cd = d.canonicalize().ok()?;
+    let cr = repo.canonicalize().ok()?;
+    if !cd.starts_with(&cr) {
+        return None;
+    }
+    Some(d)
+}
+
 /// 从仓库根**现找**一遍全部产物目录（删除路径用）。
 ///
 /// 与扫描记账走同一个判据 [`is_artifact_dir_under`]；点中就不再深入
@@ -1029,7 +1070,31 @@ impl RepoScanner {
                 continue;
             }
 
-            let dirs = find_artifact_dirs(&path);
+            let mut all_ok = true;
+            let dirs: Vec<PathBuf> = match &plan.artifact_targets {
+                // 勾选子集：把相对路径解析回仓库内的目录。解析不出来的（`..`、
+                // 绝对路径、空串、已不存在）单独报失败，**不静默跳过**——账面与
+                // 实际删掉的东西必须逐条对得上（S2）。
+                Some(rels) => {
+                    let mut picked: Vec<PathBuf> = Vec::new();
+                    for rel in rels {
+                        match resolve_artifact_target(&path, rel) {
+                            Some(d) => picked.push(d),
+                            None => {
+                                all_ok = false;
+                                result.failed.push(CleanFailure {
+                                    id: rel.clone(),
+                                    reason: "不是本仓库内的产物目录路径".into(),
+                                });
+                            }
+                        }
+                    }
+                    picked.sort();
+                    picked.dedup();
+                    picked
+                }
+                None => find_artifact_dirs(&path),
+            };
             if dirs.is_empty() {
                 result.failed.push(CleanFailure {
                     id: id.clone(),
@@ -1039,7 +1104,6 @@ impl RepoScanner {
             }
 
             let sizes = dir_sizes_batch(&dirs);
-            let mut all_ok = true;
             for d in &dirs {
                 // 进废纸篓前的最后复核（点得动才删得了）：缓存到点击之间
                 // 目录可能被改名 / 换了内容，判据必须此刻仍成立

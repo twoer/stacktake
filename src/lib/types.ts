@@ -101,6 +101,15 @@ export interface CleanPlan {
   item_ids: string[]
   confirmed: boolean
   scope?: "repo" | "artifacts"
+  /**
+   * 产物清理的子集（`scope: "artifacts"` 时有效）：只清这些**相对仓库根**的产物目录。
+   * 缺省 / undefined = 仓库内全部（= 弹窗里的「全选」）。空数组会被服务端当成
+   * 「什么都没选中」拒掉，不会退化成清全部。
+   *
+   * 前端选过不算数：服务端会把每条重新拼回绝对路径，并过与全量清理完全相同的
+   * 复核（在仓库内、白名单、不藏 Git），见 `repos::resolve_artifact_target`。
+   */
+  artifact_targets?: string[]
 }
 
 /** Rust `scan::CleanFailure` 的对应结构——单项失败的原因（给人看的一句话）。 */

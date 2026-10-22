@@ -61,7 +61,7 @@ Scanner trait → AssetGroup → scan-cache.json → tauri command → Vue 表�
 `trash::delete`、`RepoScanner::clean_repo` / `ToolchainScanner::clean_cache` / `AiToolsScanner::clean_ai`、`CleanPlan` / `CleanResult` 经 `clean_items` command 接入前端。开启三条件已满足：前端二次确认 UI（检查器动作条 + 确认弹窗，列明路径/体积/废纸篓可恢复）+ 服务端 `confirmed` 字段校验（缺字段反序列化即拒，显式 `false` 再拒）+ 废纸篓兜底（`trash::delete`，绝不硬删）。
 
 - **只有这三组接了删除**（`supports_clean()` 返回 `true`）。其它 Scanner **别覆盖 `supports_clean()`**：没有删除实现却返回 `true`，等于宣称一个点不动的能力。
-- **repos 组内有两种删除，复核是两条路**（P2 起）：整仓（`clean_repo`，查未推送 / 未提交改动）与构建产物（`clean_artifacts`，按 `CleanPlan.scope` 派发——清产物不动源码与 `.git`，所以**不查** git 状态；藏有 `.git` 的产物目录整目录拒）。产物判据 `repos::is_artifact_dir_under` 是纯「名字白名单 + 兄弟项目标记」规则，**跨平台一致、没有 win_rel 之分**；账面（`metrics.artifacts` / detail「构建产物」/ 标签「有产物」）与删除复核共用它，别只改一头。白名单加条目时 `artifact_whitelist_is_pinned` 会红。
+- **repos 组内有两种删除，复核是两条路**（P2 起）：整仓（`clean_repo`，查未推送 / 未提交改动）与构建产物（`clean_artifacts`，按 `CleanPlan.scope` 派发——清产物不动源码与 `.git`，所以**不查** git 状态；藏有 `.git` 的产物目录整目录拒）。构建产物可以按目录勾选子集（`CleanPlan.artifact_targets`，相对仓库根，缺省 = 全部）：**前端选过不算数**，服务端把每条重新解析成绝对路径（拒 `..` / 绝对路径 / 空串 / 不存在的）再过与全量同一套复核，空数组视为「什么都没选中」直接拒，不静默跳过也不退化成清全部。产物判据 `repos::is_artifact_dir_under` 是纯「名字白名单 + 兄弟项目标记」规则，**跨平台一致、没有 win_rel 之分**；账面（`metrics.artifacts` / detail「构建产物」/ 标签「有产物」）与删除复核共用它，别只改一头。白名单加条目时 `artifact_whitelist_is_pinned` 会红。
 - **ai_tools 的一行 = 一个「工具 × 类别」**（B1）：`clean_ai` 只接受 `cleanable` 类别（日志 / 会话 / 缓存），根路径必须命中**本次** `tools_for` 白名单，并在点击那一刻重读目录、按文件名重新分类，只删当前仍属该类别的一级子项（软链跳过）。**会话删了不会再生**——确认弹窗必须单独把这条写在明处，别套缓存组的文案。
 - **前端别写死分组 id**：能力由后端以 `AssetGroup.supports_clean` 下发，`canClean` 判它。**能力的唯一真相在 Rust 侧**（S2 之前写死 `id === "repos"`，加第二个分组就漏改）。
 - **`cleanable` 的含义是「本工具点下去真能删掉」**（S3 收窄，不再是「删了按需重下」）。toolchain 里有官方清理命令的（pnpm store prune / npm cache clean --force / uv / pip / brew cleanup / go clean 等）**一律不标 `cleanable`**——命令显示在 detail 的「清理方式」里让人自己跑，本工具不代跑用户级命令。搬走整个缓存也安全，但 `pnpm store prune` 只删没被引用的包，精确得多；**账面变小是方向正确的**（报不满比报虚好）。判据 `cache_is_cleanable(src) = src.cache && src.cmd.is_empty()`，由 `toolchain_sources_with_official_cmd_are_not_cleanable` 守着（**新增白名单条目时它会红，别把断言改松**）。ai_tools 同口径：技能 / 索引 / 配置 / 运行时 / 未知**一律不标**，由 `ai_tools_clean_flags_follow_category` 守着。
@@ -174,7 +174,7 @@ cd src-tauri && cargo test                # 只跑 Rust 测试（本机真实数
 cd src-tauri && cargo run --example dump  # 扫一次写缓存再读回，输出 JSON 供人工核对
 ```
 
-测试目前 120 passed + 2 ignored（约 6 秒；ignored 的是对照 bench `bench_native_size_vs_du` 与真实数据守恒检查 `repo_nesting_real_data_stays_conserved`）。**用例数随刀增长，改了扫描逻辑顺手更新这个数**——它过期时最容易骗人。**扫描逻辑的测试优先喂临时目录、不依赖本机装了什么**，且**测试要自己写一份独立实现当基准**（`tree_bytes`），别拿被测代码当 oracle——两边一起错会一起绿；反过来，扫真实数据的用例容差要按「数据是活的」给，不能用它证明精度。各 Scanner 的测试思路范例（docker 喂真实 CLI 输出、toolchain 全喂假 home、WSL 读取走注入——「本机不注册」不等于「没测」）见 appendix。
+测试目前 127 passed + 2 ignored（约 7 秒；ignored 的是对照 bench `bench_native_size_vs_du` 与真实数据守恒检查 `repo_nesting_real_data_stays_conserved`）。**用例数随刀增长，改了扫描逻辑顺手更新这个数**——它过期时最容易骗人。**扫描逻辑的测试优先喂临时目录、不依赖本机装了什么**，且**测试要自己写一份独立实现当基准**（`tree_bytes`），别拿被测代码当 oracle——两边一起错会一起绿；反过来，扫真实数据的用例容差要按「数据是活的」给，不能用它证明精度。各 Scanner 的测试思路范例（docker 喂真实 CLI 输出、toolchain 全喂假 home、WSL 读取走注入——「本机不注册」不等于「没测」）见 appendix。
 
 ## 代码风格
 
