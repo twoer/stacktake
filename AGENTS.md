@@ -33,7 +33,7 @@ Scanner trait → AssetGroup → scan-cache.json → tauri command → Vue 表�
 
 全量扫描瓶颈全在目录体积统计，实测**约 26 秒量级**（同一份快照在 25~32 秒间跑过，差异来自文件系统缓存冷热与机器负载；带出处的值只在 README「扫描策略」写一次，实测时间线见 appendix）。数据变化极慢——两百多个仓库里近 7 天有提交的只有个位数。
 
-策略：**有缓存直接返回，不做任何后台扫描；只有无缓存（首次运行）才真扫；之后靠用户点「重扫」。** 曾经有过「先出缓存 + 后台自动重扫」的版本，是**刻意删掉**的，不要加回来——它换不来新鲜度，却让每次打开都啃几十秒磁盘。
+策略：**有缓存直接返回，不做任何后台扫描；只有无缓存（首次运行）才真扫；之后靠用户点「重扫」。** 曾经有过「先出缓存 + 后台自动重扫」的版本，是**刻意删掉**的，不要加回来——它换不来新鲜度，却让每次打开都啃几十秒磁盘。「重扫」有全量（`rescan_now`）与单组（`rescan_group`，清理完成后的自动刷新也走它）两档，都是人显式发起，不在这条禁区内；缓存里永远存完整快照，单组重扫是 load→合并→save 回写，不是按组拆文件。
 
 ### 2. `MetricValue` 必须带类型标签
 
@@ -67,7 +67,7 @@ Scanner trait → AssetGroup → scan-cache.json → tauri command → Vue 表�
 - **`cleanable` 的含义是「本工具点下去真能删掉」**（S3 收窄，不再是「删了按需重下」）。toolchain 里有官方清理命令的（pnpm store prune / npm cache clean --force / uv / pip / brew cleanup / go clean 等）**一律不标 `cleanable`**——命令显示在 detail 的「清理方式」里让人自己跑，本工具不代跑用户级命令。搬走整个缓存也安全，但 `pnpm store prune` 只删没被引用的包，精确得多；**账面变小是方向正确的**（报不满比报虚好）。判据 `cache_is_cleanable(src) = src.cache && src.cmd.is_empty()`，由 `toolchain_sources_with_official_cmd_are_not_cleanable` 守着（**新增白名单条目时它会红，别把断言改松**）。ai_tools 同口径：技能 / 索引 / 配置 / 运行时 / 未知**一律不标**，由 `ai_tools_clean_flags_follow_category` 守着。
 - **账面与删除判据必须逐条对齐**：标了可清理的，不许是点下去会被拒的。repos 查外部 git 状态（会变），toolchain / ai_tools 查白名单与类别（静态 + 点击时复核）——但**「点得动才删得了」同样不该由前端说了算**：`clean_cache` / `clean_ai` **不信任前端传来的 id**，回到白名单 / 当前目录重查一遍，不在白名单或不可清理一律拒。`repos_clean_candidate_mirrors_deletion_judgment` 守 repos 半边，`toolchain_cleanable_rows_all_have_a_deletion_path` 与 `ai_tools_cleanable_rows_all_have_a_deletion_path` 守另两组。
 - **`Item.id` 三组形态不同**：repos 是裸路径、toolchain 是 `toolchain:` 前缀、ai_tools 是 `ai:<类别键>:<工具根路径>`（类别键 ASCII，路径在第二个冒号之后，Windows 盘符不受影响）。`parse_cache_id` 去完前缀是空串必须拒——`PathBuf::from("")` 在文件系统语义上等于当前工作目录（这条写用例时真红过）。
-- **执行清理必须人显式发起**：属暂停条件里的破坏性操作，门禁只验代码与确认流，**绝不真删**——测试不覆盖 `trash::delete` 成功路径（只验拒绝路径，真删留给真人）。`@{u}...HEAD` 的 `--left-right` 两列曾赋反（落后当未推送、未推送放行），已修并由 `repos_scan_reports_unpushed_direction_correctly` 钉住方向——**方向反了比不判更危险**。
+- **执行清理必须人显式发起**：属暂停条件里的破坏性操作，门禁只验代码与确认流，**绝不真删**——测试不覆盖 `trash::delete` 成功路径（只验拒绝路径，真删留给真人）。`@{u}...HEAD` 的 `--left-right` 两列曾赋反（落后当未推送、未推送放行），已修并由 `repos_scan_reports_unpushed_direction_correctly` 钉住方向——**方向反了比不判更危险**。推送状态**核查不出**（没配 upstream、detached HEAD、git 命令失败）按「可能有未推送」一票否决（fail-closed，`repos::Push` 三态），stash 非空同样否决——`status --porcelain` 看不见 stash，整仓删除会连它一起没；git 调用本身不许写仓库（`GIT_OPTIONAL_LOCKS`，`repos_git_calls_never_write_index` 守着）。
 - **前端无自动化行为测试**：只有 `vue-tsc` + 构建 + 代码审查。`canClean` 判据这类逻辑错 vue-tsc 抓不到。
 
 ### 5. AI 工具目录只读文件名，不读任何文件内容
@@ -174,7 +174,7 @@ cd src-tauri && cargo test                # 只跑 Rust 测试（本机真实数
 cd src-tauri && cargo run --example dump  # 扫一次写缓存再读回，输出 JSON 供人工核对
 ```
 
-测试目前 127 passed + 2 ignored（约 7 秒；ignored 的是对照 bench `bench_native_size_vs_du` 与真实数据守恒检查 `repo_nesting_real_data_stays_conserved`）。**用例数随刀增长，改了扫描逻辑顺手更新这个数**——它过期时最容易骗人。**扫描逻辑的测试优先喂临时目录、不依赖本机装了什么**，且**测试要自己写一份独立实现当基准**（`tree_bytes`），别拿被测代码当 oracle——两边一起错会一起绿；反过来，扫真实数据的用例容差要按「数据是活的」给，不能用它证明精度。各 Scanner 的测试思路范例（docker 喂真实 CLI 输出、toolchain 全喂假 home、WSL 读取走注入——「本机不注册」不等于「没测」）见 appendix。
+测试目前 138 passed + 2 ignored（约 6 秒；ignored 的是对照 bench `bench_native_size_vs_du` 与真实数据守恒检查 `repo_nesting_real_data_stays_conserved`）。**用例数随刀增长，改了扫描逻辑顺手更新这个数**——它过期时最容易骗人。**扫描逻辑的测试优先喂临时目录、不依赖本机装了什么**，且**测试要自己写一份独立实现当基准**（`tree_bytes`），别拿被测代码当 oracle——两边一起错会一起绿；反过来，扫真实数据的用例容差要按「数据是活的」给，不能用它证明精度。各 Scanner 的测试思路范例（docker 喂真实 CLI 输出、toolchain 全喂假 home、WSL 读取走注入——「本机不注册」不等于「没测」）见 appendix。
 
 ## 代码风格
 

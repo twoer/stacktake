@@ -932,6 +932,43 @@ Host gamma
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 逐组时间戳往返：`save_with_times` 写进映射的值要原样读回来；映射里缺的
+    /// 组按本次写入时间记——单组重扫路径给「刚扫完的组」记时靠的就是这个语义。
+    #[test]
+    fn cache_round_trip_preserves_group_saved_at() {
+        let dir = temp_dir("group-times");
+        let a = overview_fixture("repos", "Git 仓库", 1, 0);
+        let b = overview_fixture("toolchain", "工具链缓存", 2, 0);
+
+        let times = std::collections::BTreeMap::from([("repos".to_string(), 1_000_000)]);
+        cache::save_with_times(&dir, &[a.clone(), b.clone()], &times).unwrap();
+        let got = cache::load(&dir).expect("读缓存失败");
+        assert_eq!(
+            got.group_saved_at.get("repos"),
+            Some(&1_000_000),
+            "映射里的值要原样往返"
+        );
+        let toolchain_at = *got
+            .group_saved_at
+            .get("toolchain")
+            .expect("不在映射里的组也要有记录");
+        assert!(
+            toolchain_at >= 1_000_000,
+            "缺的组按本次写入时间记，不该比映射里的值还旧：{toolchain_at}"
+        );
+
+        // 全量 save（不带映射）：所有组记同一时刻
+        cache::save(&dir, &[a, b]).unwrap();
+        let got = cache::load(&dir).unwrap();
+        let all: Vec<i64> = got.group_saved_at.values().copied().collect();
+        assert!(
+            all.iter().all(|t| *t == all[0]),
+            "全量 save 后各组时间应一致：{all:?}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// 缓存里绝不能出现私钥内容。这是最重要的安全边界：
     /// 缓存文件是明文 JSON 落盘，等于把扫描结果多复制了一份到磁盘。
     #[test]
@@ -3692,6 +3729,48 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         assert_eq!(ids, crate::scan::GROUP_ORDER, "乱序输入应排成固定语义序");
     }
 
+    /// 单组重扫的合并：同 id 顶掉旧行，快照里没有的组追加在末尾
+    /// （顺序由调用方过 `order_groups` 收拾，这里只验合并语义本身）。
+    #[test]
+    fn upsert_group_replaces_by_id_and_appends_new() {
+        let snapshot = vec![
+            overview_fixture("repos", "Git 仓库", 1, 0),
+            overview_fixture("toolchain", "工具链缓存", 2, 0),
+        ];
+
+        let fresh = overview_fixture("repos", "Git 仓库", 100, 50);
+        let merged = crate::scan::upsert_group(snapshot, fresh);
+        assert_eq!(merged.len(), 2, "替换不该增加组数");
+        assert_eq!(merged[0].id, "repos");
+        assert_eq!(merged[0].total_size(), 100, "同 id 的旧行应被顶掉");
+
+        let fresh = overview_fixture("wsl", "WSL", 7, 0);
+        let merged = crate::scan::upsert_group(merged, fresh);
+        assert_eq!(merged.len(), 3, "快照里没有的组要追加");
+        assert_eq!(merged[2].id, "wsl", "新组追加在末尾");
+    }
+
+    /// 单组重扫时 id 挑不到 Scanner 的分流：已知且未隐藏的 id = 环境没了，
+    /// 摘除该组（与全量重扫语义一致）；隐藏组与完全未知的 id 一律拒绝。
+    #[test]
+    fn missing_group_fallback_distinguishes_uninstalled_from_unknown() {
+        use crate::MissingGroupFallback;
+        // local_models 是探测型 Scanner：卸载了 Ollama 等全部来源后就不注册
+        assert_eq!(
+            crate::missing_group_fallback("local_models"),
+            MissingGroupFallback::RemoveGroup
+        );
+        // H14 暂时隐藏的组不在侧栏，也不该被「摘除」路径碰到
+        assert_eq!(
+            crate::missing_group_fallback("java"),
+            MissingGroupFallback::Reject
+        );
+        assert_eq!(
+            crate::missing_group_fallback("nope"),
+            MissingGroupFallback::Reject
+        );
+    }
+
     #[test]
     fn order_groups_keeps_unknown_ids_last_in_original_order() {
         let groups = vec![
@@ -4014,8 +4093,9 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
     // ---- 清理入口（S2 / D1 拍板选 A）----
 
     /// 显示判据必须与 `clean_repo` 真删前的复核逐条对齐（S2 修的核心）：
-    /// 两条入选口径照旧，未推送 / 未提交改动一票否决——账面「可回收」不许含
-    /// 点下去会被拒的仓库。本机实测：收紧前 29 个里 23 个（9.41 GB）会被拒。
+    /// 两条入选口径照旧，未推送 / 未提交改动 / stash 非空一票否决——账面
+    /// 「可回收」不许含点下去会被拒的仓库。本机实测：收紧前 29 个里 23 个
+    /// （9.41 GB）会被拒。
     #[test]
     fn repos_clean_candidate_mirrors_deletion_judgment() {
         use crate::scan::repos::is_clean_candidate;
@@ -4024,34 +4104,79 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let fresh = 10;
 
         // 入选：大且久未动
-        assert!(is_clean_candidate(big, stale, false, 0));
+        assert!(is_clean_candidate(big, stale, false, 0, false));
         // 入选：从未有过提交（days = i64::MAX）且有体积
-        assert!(is_clean_candidate(Some(1024), i64::MAX, false, 0));
+        assert!(is_clean_candidate(Some(1024), i64::MAX, false, 0, false));
         // 一票否决：有未推送提交
         assert!(
-            !is_clean_candidate(big, stale, true, 0),
+            !is_clean_candidate(big, stale, true, 0, false),
             "有未推送不该算可回收"
         );
         // 一票否决：有未提交改动
         assert!(
-            !is_clean_candidate(big, stale, false, 3),
+            !is_clean_candidate(big, stale, false, 3, false),
             "有改动不该算可回收"
         );
+        // 一票否决：stash 非空（stash 本体在 .git 里，整仓删除连带丢掉）
+        assert!(
+            !is_clean_candidate(big, stale, false, 0, true),
+            "有 stash 不该算可回收"
+        );
         // 一票否决叠加在「从未提交」口径上同样成立
-        assert!(!is_clean_candidate(Some(1024), i64::MAX, true, 0));
+        assert!(!is_clean_candidate(Some(1024), i64::MAX, true, 0, false));
+        assert!(!is_clean_candidate(Some(1024), i64::MAX, false, 0, true));
         // 不入选：小仓库（再干净也不进清理候选）
-        assert!(!is_clean_candidate(Some(1024), stale, false, 0));
+        assert!(!is_clean_candidate(Some(1024), stale, false, 0, false));
         // 不入选：大而新
-        assert!(!is_clean_candidate(big, fresh, false, 0));
+        assert!(!is_clean_candidate(big, fresh, false, 0, false));
         // 边界：恰好 200 MB 不算大（判据是严格大于）
         assert!(!is_clean_candidate(
             Some(200 * 1024 * 1024),
             stale,
             false,
-            0
+            0,
+            false
         ));
         // 边界：恰好 180 天不算久
-        assert!(!is_clean_candidate(big, 180, false, 0));
+        assert!(!is_clean_candidate(big, 180, false, 0, false));
+    }
+
+    /// 推送状态三态推断的纯函数样本。fail-closed 的核心在样本表里看得最
+    /// 清楚：`@{u}` 解析失败不再是「按 ahead = 0 放行」，查不出与「没有」
+    /// 从此是两回事。
+    #[test]
+    fn repos_push_state_fail_closed_samples() {
+        use crate::scan::repos::{Push, push_state};
+
+        // 正常路：两列，左落后右未推送（方向铁律，S2 钉过）
+        assert_eq!(push_state(Some("0\t0"), None, true), Push::Clean);
+        assert_eq!(
+            push_state(Some("3\t2"), None, true),
+            Push::Ahead {
+                ahead: 2,
+                behind: 3
+            }
+        );
+        // 不是两列 / 数字解析不出 = 核实不了，不是「没有」
+        assert_eq!(push_state(Some("garbage"), None, true), Push::Unknown);
+        assert_eq!(push_state(Some("1"), None, true), Push::Unknown);
+
+        // @{u} 失败退回「HEAD 不在任何远端上的提交数」
+        assert_eq!(push_state(None, Some("0"), true), Push::Clean);
+        assert_eq!(
+            push_state(None, Some("4"), true),
+            Push::Ahead {
+                ahead: 4,
+                behind: 0
+            }
+        );
+        // 退路也解析不了 HEAD、git 本身好着 → 从未有过提交，没有可推的
+        // （工作区内容与 stash 由另外两条否决拦）
+        assert_eq!(push_state(None, None, true), Push::Clean);
+
+        // git 整体不可信（stash list 都失败）→ 一律按未知
+        assert_eq!(push_state(Some("0\t0"), None, false), Push::Unknown);
+        assert_eq!(push_state(None, Some("0"), false), Push::Unknown);
     }
 
     /// `confirmed` 缺省时反序列化直接失败——第一道闸在进门处，不靠服务端想得起。
@@ -4095,6 +4220,37 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// 把仓库装成「全部推过了」：挂一个不会被访问的 origin，远端跟踪引用
+    /// 指向 HEAD。分支名取自 abbrev-ref，不写死 master。
+    fn sync_with_phantom_origin(repo: &Path) {
+        let branch = git_in(repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        let head = git_in(repo, &["rev-parse", "HEAD"]);
+        git_in(
+            repo,
+            &["remote", "add", "origin", "https://example.com/no-op.git"],
+        );
+        git_in(
+            repo,
+            &["config", &format!("branch.{branch}.remote"), "origin"],
+        );
+        git_in(
+            repo,
+            &[
+                "config",
+                &format!("branch.{branch}.merge"),
+                &format!("refs/heads/{branch}"),
+            ],
+        );
+        git_in(
+            repo,
+            &[
+                "update-ref",
+                &format!("refs/remotes/origin/{branch}"),
+                &head,
+            ],
+        );
     }
 
     /// `confirmed: false` 时整个计划拒绝，且**不碰磁盘**（仓库原地不动）。
@@ -4267,10 +4423,267 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 没配 upstream 的仓库曾经按 ahead = 0 放行——全部提交都没推送过的
+    /// 恰恰是最该拦的。退路计数（HEAD 不在任何远端上）必须接住它：账面不标
+    /// 可清理、点下去被拒，且给出确切的未推送数。
+    #[test]
+    fn repos_clean_refuses_repo_without_upstream() {
+        let repo = git_repo("clean-no-upstream"); // 有提交、没远端、没 upstream
+        let root = repo.parent().unwrap().to_path_buf();
+
+        let g = RepoScanner::new(vec![root.clone()]).scan();
+        let item = g.items.iter().find(|i| i.name == "repo").expect("应扫到");
+        assert!(
+            item.tags.iter().any(|t| t == "未推送"),
+            "退路计数应识别出未推送：tags={:?}",
+            item.tags
+        );
+        assert!(!item.cleanable, "从未推送过的仓库不该标可清理");
+        match item.metrics.get("dirty") {
+            Some(MetricValue::Text(s)) => assert_eq!(s, "↑1 ↓0", "退路计数：未推送 1、无落后参照"),
+            other => panic!("dirty 该是文本，实为 {other:?}"),
+        }
+
+        let scanner = RepoScanner::new(vec![root]);
+        let plan = crate::scan::CleanPlan {
+            group_id: "repos".into(),
+            item_ids: vec![repo.display().to_string()],
+            confirmed: true,
+            scope: crate::scan::CleanScope::Repo,
+            artifact_targets: None,
+        };
+        let r = scanner.clean_repo(&plan);
+        assert!(r.succeeded.is_empty(), "从未推送过的仓库不该被删");
+        assert_eq!(r.failed.len(), 1);
+        assert_eq!(r.failed[0].reason, "有未推送提交");
+        assert!(repo.exists(), "被拒的仓库必须原地留在磁盘上");
+
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
+    /// 推过但 upstream 没配的仓库**不能被误伤**：`@{u}` 解析失败时退路计数
+    /// 为 0，按「已核实无未推送」处理。这是 fail-closed 收紧的边界，不是
+    /// 收紧对象——收紧过头会把能安全清理的仓库挡在外面。
+    #[test]
+    fn repos_pushed_without_upstream_stays_clean() {
+        let repo = git_repo("pushed-no-upstream");
+        sync_with_phantom_origin(&repo);
+        // 撤掉 upstream 配置 → @{u} 解析失败，只剩远端跟踪引用
+        git_in(&repo, &["config", "--unset", "branch.master.remote"]);
+        git_in(&repo, &["config", "--unset", "branch.master.merge"]);
+
+        let g = RepoScanner::new(vec![repo.parent().unwrap().to_path_buf()]).scan();
+        let item = g.items.iter().find(|i| i.name == "repo").expect("应扫到");
+        assert!(
+            !item.tags.iter().any(|t| t == "未推送"),
+            "推过（HEAD 在远端引用里）不该标未推送：tags={:?}",
+            item.tags
+        );
+        match item.metrics.get("dirty") {
+            Some(MetricValue::Text(s)) => assert_eq!(s, "干净"),
+            other => panic!("dirty 该是文本，实为 {other:?}"),
+        }
+
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
+    /// stash 本体在 `.git` 里，整仓进废纸篓会连它一起没——`status --porcelain`
+    /// 看不见 stash，stash 里有未提交工作的仓库曾经被当成「干净」放行。
+    #[test]
+    fn repos_clean_refuses_repo_with_stash() {
+        let repo = git_repo("clean-stash");
+        sync_with_phantom_origin(&repo); // 推送干净，把否决让给 stash 这条
+        // 造一个**真 stash**：`git stash` 的高层命令跨版本有歧义（save 已废弃、
+        // push 在部分版本报子命令不明确），create + store 是它俩的底层原语，
+        // 写的正是真实 stash 的 reflog——`stash list` 能看到，工作区保持干净
+        // （改动若留在 index / worktree 会先撞上「未提交改动」否决）。
+        std::fs::write(repo.join("a.txt"), "changed").unwrap();
+        let sha = git_in(&repo, &["stash", "create", "WIP on master"]);
+        git_in(&repo, &["stash", "store", "-m", "WIP on master", &sha]);
+        git_in(&repo, &["checkout", "-q", "--", "a.txt"]);
+
+        let g = RepoScanner::new(vec![repo.parent().unwrap().to_path_buf()]).scan();
+        let item = g.items.iter().find(|i| i.name == "repo").expect("应扫到");
+        assert!(
+            item.tags.iter().any(|t| t == "有 stash"),
+            "有 stash 该打标签：tags={:?}",
+            item.tags
+        );
+        assert!(!item.cleanable, "有 stash 不该标可清理");
+
+        let scanner = RepoScanner::new(vec![repo.parent().unwrap().to_path_buf()]);
+        let plan = crate::scan::CleanPlan {
+            group_id: "repos".into(),
+            item_ids: vec![repo.display().to_string()],
+            confirmed: true,
+            scope: crate::scan::CleanScope::Repo,
+            artifact_targets: None,
+        };
+        let r = scanner.clean_repo(&plan);
+        assert!(r.succeeded.is_empty(), "有 stash 不该被删");
+        assert_eq!(r.failed.len(), 1);
+        assert_eq!(r.failed[0].reason, "有 stash 未处理");
+        assert!(repo.exists(), "被拒的仓库必须原地留在磁盘上");
+
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
+    /// 从未有过提交的空 init 仓库是设计内候选（「从未提交」口径）——推送
+    /// 核查与 stash 否决都不能误伤它：HEAD 解析不了且 git 正常 → 没有可推
+    /// 的东西；stash list 正常返回空。
+    #[test]
+    fn repos_unborn_head_stays_candidate() {
+        let root = temp_dir("unborn");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_in(&repo, &["init", "-q"]); // 不提交
+
+        let g = RepoScanner::new(vec![root.clone()]).scan();
+        let item = g.items.iter().find(|i| i.name == "repo").expect("应扫到");
+        assert!(
+            !item.tags.iter().any(|t| t == "未推送"),
+            "没提交就没可推的：tags={:?}",
+            item.tags
+        );
+        assert!(
+            !item.tags.iter().any(|t| t == "有 stash"),
+            "空 init 没有 stash"
+        );
+        assert!(
+            item.cleanable,
+            "空 init 是设计内候选（从未提交口径）：tags={:?}",
+            item.tags
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// detached HEAD 曾显示成字面 "HEAD"（abbrev-ref 对游离状态返回的就是它，
+    /// 按空串判断永远接不到「游离」），且游离提交不在任何分支上、没推送过
+    /// ——必须显示「游离」并拒删。
+    #[test]
+    fn repos_detached_head_shows_detached_and_refuses_clean() {
+        let repo = git_repo("detached");
+        git_in(&repo, &["checkout", "-q", "--detach", "HEAD"]); // 唯一提交不在任何远端
+
+        let g = RepoScanner::new(vec![repo.parent().unwrap().to_path_buf()]).scan();
+        let item = g.items.iter().find(|i| i.name == "repo").expect("应扫到");
+        match item.metrics.get("branch") {
+            Some(MetricValue::Text(s)) => assert_eq!(s, "游离", "游离 HEAD 不该显示成 HEAD"),
+            other => panic!("branch 该是文本，实为 {other:?}"),
+        }
+        assert!(
+            item.tags.iter().any(|t| t == "未推送"),
+            "游离提交没推送过，退路计数应识别"
+        );
+        assert!(!item.cleanable);
+
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
+    /// git 坏掉的仓库（任何 git 调用都失败）：一切按最坏情况算——stash 当有、
+    /// 推送状态按未知，绝不标可清理。这是 fail-closed 的兜底档。
+    #[test]
+    fn repos_broken_git_is_never_cleanable() {
+        let root = temp_dir("broken-git");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git").join("HEAD"), "not a real gitfile").unwrap();
+        std::fs::write(repo.join("junk.txt"), "x").unwrap();
+
+        let g = RepoScanner::new(vec![root.clone()]).scan();
+        let item = g.items.iter().find(|i| i.name == "repo").expect("应扫到");
+        assert!(
+            !item.cleanable,
+            "git 检查不了的仓库不该标可清理：tags={:?}",
+            item.tags
+        );
+        assert!(
+            item.tags.iter().any(|t| t == "未推送"),
+            "推送状态按未知处理：tags={:?}",
+            item.tags
+        );
+        assert!(
+            item.tags.iter().any(|t| t == "有 stash"),
+            "stash 状态按未知处理：tags={:?}",
+            item.tags
+        );
+        match item.metrics.get("dirty") {
+            Some(MetricValue::Text(s)) => assert_eq!(s, "推送未核实"),
+            other => panic!("dirty 该是文本，实为 {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 「除清理入口外全程只读」的承诺对 git 子进程也成立：`git status` 会
+    /// 机会性回写 `.git/index`（racy 清理：index 与文件同秒写入后，隔一秒
+    /// 跑一次 status 就会回写、清掉 raciness），`GIT_OPTIONAL_LOCKS=0` 让
+    /// 刷新只留在内存。对照组先证明「不保护真的会写」——git 哪天不再这么
+    /// 做了，这条会先红提醒我们被测断言已失去前提。
+    #[test]
+    fn repos_git_calls_never_write_index() {
+        let stamp = |repo: &Path| {
+            let m = std::fs::metadata(repo.join(".git").join("index")).unwrap();
+            let t = m
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap();
+            (t.as_nanos(), m.len())
+        };
+        let settle = || std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        // 强制 racy：把 .git/index 的 mtime 拨回与 a.txt 同刻。git 的 racy 判定是
+        // 秒粒度（USE_NSEC 默认关），前提是「add 写 index 与写文件恰好同一墙钟秒」
+        // ——那是 fixture 的时序运气，nextest 并行负载下实测撞过秒边界，对照组
+        // 因此假红过。两边都钉死：对照组保证「status 真的有 racy 要清」，
+        // 被测侧保证「不写 index」不是碰巧没事可做的空过。
+        let force_racy = |repo: &Path| {
+            let t = std::fs::metadata(repo.join("a.txt"))
+                .unwrap()
+                .modified()
+                .unwrap();
+            let index = repo.join(".git").join("index");
+            let f = std::fs::File::options().write(true).open(&index).unwrap();
+            f.set_modified(t).unwrap();
+        };
+
+        // 对照组：不带保护的 git status 会回写 index
+        let control = git_repo("index-write-control");
+        force_racy(&control);
+        settle();
+        let before = stamp(&control);
+        git_in(&control, &["status", "--porcelain"]);
+        assert_ne!(
+            before,
+            stamp(&control),
+            "对照组失效：plain status 不再回写 index，被测断言的前提没了"
+        );
+
+        // 被测：走 git_output（GIT_OPTIONAL_LOCKS=0）不回写
+        let repo = git_repo("index-write-protected");
+        force_racy(&repo);
+        settle();
+        let before = stamp(&repo);
+        crate::scan::repos::git_output(&repo, &["status", "--porcelain"]);
+        assert_eq!(
+            before,
+            stamp(&repo),
+            "git_output 不该写 .git/index（只读承诺）"
+        );
+
+        std::fs::remove_dir_all(control.parent().unwrap()).ok();
+        std::fs::remove_dir_all(repo.parent().unwrap()).ok();
+    }
+
     /// 有未提交改动的仓库：同样拒绝。改动是**唯一副本**的代码，删了不可再生。
     #[test]
     fn repos_clean_rejects_dirty_repo() {
         let repo = git_repo("clean-dirty");
+        // 先装成「推过了」：fail-closed 之后没推过的仓库会先撞上「未推送」
+        // 否决，这条测试要隔离验证的只是「未提交改动」这一条
+        sync_with_phantom_origin(&repo);
         std::fs::write(repo.join("a.txt"), "modified").unwrap(); // 已跟踪文件被改
 
         let scanner = RepoScanner::new(vec![repo.parent().unwrap().to_path_buf()]);
@@ -4711,6 +5124,9 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         }
         git_in(&repo, &["add", "big.bin"]);
         commit_old(&repo);
+        // fail-closed 之后「干净」必须是**可核实的**干净：装成推过了，否则
+        // 退路计数会把两个都没推过的提交算成未推送，方向一的断言红
+        sync_with_phantom_origin(&repo);
 
         let g = RepoScanner::new(vec![root.clone()]).scan();
         let it = || {

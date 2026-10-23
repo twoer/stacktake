@@ -156,6 +156,19 @@ pub fn order_groups(mut groups: Vec<AssetGroup>) -> Vec<AssetGroup> {
     groups
 }
 
+/// 把一份新扫的分组并入既有快照：按 id 替换，快照里没有就追加。
+///
+/// 单组重扫的合并逻辑（`lib.rs::run_group_scan`）。**纯函数**：不碰磁盘、
+/// 不起 Scanner，喂样本即可测。顺序不用这里操心——调用方随后过
+/// `with_overview`，内部的 `order_groups` 会按 [`GROUP_ORDER`] 重排。
+pub fn upsert_group(mut groups: Vec<AssetGroup>, fresh: AssetGroup) -> Vec<AssetGroup> {
+    match groups.iter_mut().find(|g| g.id == fresh.id) {
+        Some(slot) => *slot = fresh,
+        None => groups.push(fresh),
+    }
+    groups
+}
+
 impl AssetGroup {
     /// 本组合计体积（只数 `size` 指标里真是字节的项）。
     pub fn total_size(&self) -> u64 {

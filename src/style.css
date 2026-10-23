@@ -1,3 +1,12 @@
+/* vue-sonner 的默认样式必须夹在 base 与 utilities 之间（cascade layer 后声明者胜）：
+   直接 import 是 unlayered（视作最后一层、优先级最高），会压过 utilities 里的
+   group-[.toaster]:bg-card 等主题 class，toast 成了 sonner 自带的纯白/纯黑；
+   排在 base 之前则反过来，preflight 的 `* { margin:0; padding:0; border:0 }`
+   会把 sonner 的 16px 内边距、按钮内边距与 1px 边框清零。
+   显式声明成 theme → base → components → sonner → utilities：
+   preflight 压不住 sonner 的排版，utilities 又压得住 sonner 的配色。 */
+@layer theme, base, components, sonner, utilities;
+@import "vue-sonner/style.css" layer(sonner);
 @import "tailwindcss";
 @import "tw-animate-css";
 
@@ -454,6 +463,21 @@ html.macos body {
   transition: left 220ms var(--ease-out);
   pointer-events: none;
 }
+/* 单组重扫没有中间比例可画（只有 0→1 两个事件），比例条原地 0% 像坏了：
+   一小段墨线来回扫，表达「在进行」。translateX 按填充段自身宽度算，
+   -110% ~ 370% 正好从线左端扫到右端。 */
+.scanbar--indet .scanfill {
+  width: 30%;
+  animation: scan-indet 1.1s ease-in-out infinite;
+}
+@keyframes scan-indet {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(370%);
+  }
+}
 
 @keyframes page-in {
   from {
@@ -540,5 +564,8 @@ html.macos body {
   .scanfill,
   .scannib {
     transition: none;
+  }
+  .scanbar--indet .scanfill {
+    animation: none;
   }
 }

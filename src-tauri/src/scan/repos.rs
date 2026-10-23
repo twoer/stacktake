@@ -1,10 +1,12 @@
 //! Git 仓库扫描。
 //!
-//! 两个要点：
+//! 三个要点：
 //! 1. **嵌套仓库**——`parent/` 里套着 `parent/third_party/child`，直接累加体积会重复计算同一块磁盘。
 //!    做法是先扫出全部仓库路径，再按路径长度排序，把子仓库路径从父仓库的体积统计里排除。
 //! 2. **体积统计很贵**——实测整个扫描的瓶颈就在这一步（本机 pnpm store 单项就要十几秒）。
 //!    所以并发跑，且单独设超时，避免个别超大目录拖住整个看板。
+//! 3. **git 子进程是「检查」不是「使用」**——所有调用只读（[`git_command`]），
+//!    且删前复核在查不出时按最坏情况处理（fail-closed，见 [`Push`]）。
 
 use crate::scan::dirsize;
 use crate::scan::{
@@ -26,19 +28,69 @@ const STALE_DAYS: i64 = 180;
 ///
 /// 两条入选口径：大且久未动（>200 MB 且 180 天没提交），或从未有过提交
 /// （`days == i64::MAX` 即 log 为空，体积 > 0）。
-/// **一票否决**：有未推送提交或未提交改动——与 [`RepoScanner::clean_repo`]
-/// 真删前的复核逐条对应。曾经显示判据不含这两条，账面「可回收」里有近八成
-/// 点下去会被拒（S2 / D1 修的就是这个：显示的数必须等于真能删的数）。
+/// **一票否决三条**：有未推送提交（含核查不出——查不出按有未推送处理，
+/// [`Push`]）、有未提交改动、stash 非空（stash 本体在 `.git` 里，整仓进
+/// 废纸篓 = 连它一起没）——与 [`RepoScanner::clean_repo`] 真删前的复核
+/// 逐条对应。曾经显示判据不含这些，账面「可回收」里有近八成点下去会被拒
+/// （S2 / D1 修的就是这个：显示的数必须等于真能删的数）。
 pub(crate) fn is_clean_candidate(
     size: Option<u64>,
     days: i64,
     has_unpushed: bool,
     dirty_files: usize,
+    has_stash: bool,
 ) -> bool {
     let big = size.map(|s| s > LARGE_REPO_BYTES).unwrap_or(false);
     let stale = days > STALE_DAYS;
     let candidate = (big && stale) || (size.unwrap_or(0) > 0 && days == i64::MAX);
-    candidate && !has_unpushed && dirty_files == 0
+    candidate && !has_unpushed && dirty_files == 0 && !has_stash
+}
+
+/// 推送状态的核查结论。**三态**——「查过了：没有」「查过了：有」「查不出」
+/// 是三件事，查不出必须按有未推送处理（fail-closed）。S2 修过两列赋反，这轮
+/// 修的是另一半：`@{u}` 解析失败（分支没配 upstream、仓库没配远端、detached
+/// HEAD）曾经按 `ahead = 0` 放行——全部提交都没推送过的仓库恰恰拦不住。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Push {
+    /// 已核实：没有未推送提交。
+    Clean,
+    /// 已核实：有未推送提交。upstream 正常时带两列计数；走退路计数时
+    /// `behind` 恒 0（没有 upstream 就没有「落后」的参照）。
+    Ahead { ahead: usize, behind: usize },
+    /// 核查不了（git 命令失败 / 输出格式不对）。按有未推送处理，但**不虚报
+    /// 数量**——显示与拒绝理由都区别于 [`Push::Ahead`]。
+    Unknown,
+}
+
+/// 从三条 git 探测的结果推断 [`Push`]。**纯函数**——喂样本即可测，不用造仓库。
+///
+/// - `rev_list`：`rev-list --left-right --count @{u}...HEAD` 的输出（正常路）。
+///   「落后数 未推送数」两列，方向是铁律（S2：赋反过一次）。
+/// - `fallback`：上一条失败时的退路，`rev-list --count HEAD --not --remotes`
+///   （HEAD 不在任何远端分支上的提交数）。git 本身好着（`git_ok`）时它还失败
+///   只剩一种解释——HEAD 解析不了 = 从未有过提交，没有可推的东西（工作区
+///   内容与 stash 由另外两条否决拦）。
+/// - `git_ok`：`stash list` 是否成功。它失败说明这个仓库的 git 检查整体
+///   不可信，一切按最坏情况算。
+pub(crate) fn push_state(rev_list: Option<&str>, fallback: Option<&str>, git_ok: bool) -> Push {
+    if !git_ok {
+        return Push::Unknown;
+    }
+    if let Some(s) = rev_list {
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        let (Some(behind), Some(ahead)) = (parts.first(), parts.get(1)) else {
+            return Push::Unknown; // 不是两列 = 输出认不了 = 核实不了
+        };
+        return match (ahead.parse::<usize>(), behind.parse::<usize>()) {
+            (Ok(ahead), Ok(behind)) if ahead > 0 => Push::Ahead { ahead, behind },
+            (Ok(_), Ok(_)) => Push::Clean,
+            _ => Push::Unknown,
+        };
+    }
+    match fallback.and_then(|s| s.trim().parse::<usize>().ok()) {
+        Some(0) | None => Push::Clean,
+        Some(ahead) => Push::Ahead { ahead, behind: 0 },
+    }
 }
 
 // ============================================================================
@@ -572,10 +624,9 @@ struct RepoInfo {
     branch: String,
     dirty_files: usize,
     remote: String,
-    ahead: usize,
-    behind: usize,
+    push: Push,
+    has_stash: bool,
     is_nested: bool,
-    has_unpushed: bool,
 }
 
 impl RepoInfo {
@@ -585,8 +636,9 @@ impl RepoInfo {
         // 清理候选：大且久未动，或从未有过提交（size > 0 而 log 为空）
         let big = self.size.map(|s| s > LARGE_REPO_BYTES).unwrap_or(false);
         let stale = days > STALE_DAYS;
-        let risky = self.has_unpushed;
-        let cleanable = is_clean_candidate(self.size, days, self.has_unpushed, self.dirty_files);
+        let risky = !matches!(self.push, Push::Clean);
+        let cleanable =
+            is_clean_candidate(self.size, days, risky, self.dirty_files, self.has_stash);
 
         let mut tags = vec![];
         if stale {
@@ -606,6 +658,9 @@ impl RepoInfo {
         }
         if self.is_nested {
             tags.push("嵌套".to_string());
+        }
+        if self.has_stash {
+            tags.push("有 stash".to_string());
         }
 
         let mut metrics: HashMap<String, MetricValue> = HashMap::new();
@@ -632,18 +687,19 @@ impl RepoInfo {
         );
         metrics.insert(
             "branch".into(),
-            MetricValue::text(if self.branch.is_empty() {
+            MetricValue::text(if self.branch.is_empty() || self.branch == "HEAD" {
+                // 空串 = 命令失败；"HEAD" = detached——abbrev-ref 对游离 HEAD
+                // 返回的是字面 "HEAD"，不是空串，按空串判断永远接不到这一档
                 "游离".into()
             } else {
                 self.branch.clone()
             }),
         );
-        let status = if risky {
-            format!("↑{} ↓{}", self.ahead, self.behind)
-        } else if self.dirty_files > 0 {
-            format!("{} 处改动", self.dirty_files)
-        } else {
-            "干净".into()
+        let status = match self.push {
+            Push::Ahead { ahead, behind } => format!("↑{ahead} ↓{behind}"),
+            Push::Unknown => "推送未核实".into(),
+            Push::Clean if self.dirty_files > 0 => format!("{} 处改动", self.dirty_files),
+            Push::Clean => "干净".into(),
         };
         metrics.insert("dirty".into(), MetricValue::text(status));
 
@@ -802,25 +858,29 @@ fn collect_repo(path: &Path, is_nested: bool, nested: &HashSet<PathBuf>) -> Repo
 
     let remote = git_output(path, &["config", "--get", "remote.origin.url"]).unwrap_or_default();
 
-    // `@{u}...HEAD` 的 `--left-right --count` 输出两列：**左 = 落后数**（远端有、
-    // 本地没有），**右 = 未推送数**（本地有、远端没有）。曾经这两列被赋反过——
-    // 只是落后的仓库被当成「有未推送」拒绝，而真有未推送提交的仓库反而不被
-    // `clean_repo` 拦，直接进废纸篓（S2 的测试抓到的：方向反了比不判更危险）。
-    let (ahead, behind) = match git_output(
+    // stash 探测兼任「这个仓库的 git 还能不能用」的信号：它失败说明 git 检查
+    // 整体不可信——stash 按有处理、推送状态按查不出处理，全部走 fail-closed。
+    let (has_stash, git_ok) = match git_probe(path, &["stash", "list"]) {
+        Some((true, out)) => (!out.is_empty(), true),
+        _ => (true, false),
+    };
+
+    // 推送状态核查（三态，见 [`push_state`]）。`@{u}...HEAD` 的 `--left-right
+    // --count` 输出两列：**左 = 落后数**（远端有、本地没有），**右 = 未推送数**
+    // （本地有、远端没有）——曾经这两列被赋反过（S2 的测试抓到的：方向反了
+    // 比不判更危险）。失败时退回「HEAD 不在任何远端上的提交数」：没配
+    // upstream / 没配远端 / detached HEAD 的仓库从前 ahead 恒 0，全部提交
+    // 都没推送过的恰恰拦不住。
+    let rev_list = git_output(
         path,
         &["rev-list", "--left-right", "--count", "@{u}...HEAD"],
-    ) {
-        Some(s) => {
-            let parts: Vec<&str> = s.split_whitespace().collect();
-            if parts.len() == 2 {
-                (parts[1].parse().unwrap_or(0), parts[0].parse().unwrap_or(0))
-            } else {
-                (0, 0)
-            }
-        }
-        None => (0, 0),
+    );
+    let fallback = if rev_list.is_none() && git_ok {
+        git_output(path, &["rev-list", "--count", "HEAD", "--not", "--remotes"])
+    } else {
+        None
     };
-    let has_unpushed = ahead > 0;
+    let push = push_state(rev_list.as_deref(), fallback.as_deref(), git_ok);
 
     RepoInfo {
         path: path.to_path_buf(),
@@ -833,17 +893,32 @@ fn collect_repo(path: &Path, is_nested: bool, nested: &HashSet<PathBuf>) -> Repo
         branch,
         dirty_files,
         remote,
-        ahead,
-        behind,
+        push,
+        has_stash,
         is_nested,
-        has_unpushed,
     }
 }
 
-fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
+/// git 子进程的统一入口，带**只读硬化**：本工具对外承诺「除清理入口外全程
+/// 只读」，但 `git status` 会机会性地刷新并回写 `.git/index`（racy 清理：同秒
+/// 提交后隔一秒跑一次 status，实测 index 的 mtime 就变了；内容不变所以 cmp
+/// 察觉不到）；`GIT_OPTIONAL_LOCKS=0` 让刷新只留在内存。`core.fsmonitor=false`
+/// 防止对开了 fsmonitor 的仓库顺带拉起一个后台守护进程。所有 git 调用都从这
+/// 走，别绕过。
+pub(crate) fn git_command(dir: &Path) -> Command {
+    let mut c = Command::new("git");
+    c.arg("-C")
         .arg(dir)
+        .arg("-c")
+        .arg("core.fsmonitor=false")
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    c
+}
+
+/// 走 [`git_command`] 的常规调用：失败与空输出都折成 `None`（调用方不区分
+/// 这两种情形时用它；要区分就别用这个，看 [`git_probe`]）。
+pub(crate) fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = git_command(dir)
         .args(args)
         .stdin(std::process::Stdio::null())
         .output()
@@ -853,6 +928,21 @@ fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if s.is_empty() { None } else { Some(s) }
+}
+
+/// 与 [`git_output`] 的区别：**「成功但输出为空」和「命令失败」分得开**。
+/// `git_output` 把两者都折成 None——对 `stash list` 来说空输出是正常结论
+/// 「没有 stash」，不能跟「检查不了」混为一谈（混了会把好仓库误判成有 stash）。
+fn git_probe(dir: &Path, args: &[&str]) -> Option<(bool, String)> {
+    let out = git_command(dir)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    Some((
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).trim().to_string(),
+    ))
 }
 
 /// 目录占用空间（字节）。**不排除任何子目录**，要排除用 [`dir_size_excluding`]。
@@ -966,7 +1056,8 @@ fn display_roots(roots: &[PathBuf]) -> String {
 ///
 /// 安全红线：
 /// - 走 `trash::delete` 移入废纸篓，绝不 `rm -rf`
-/// - 有未推送提交或未提交改动的一律拒绝，这是不可逆损失
+/// - 有未推送提交（含核查不出）、未提交改动、stash 非空的一律拒绝——都是
+///   不可逆损失
 /// - `confirmed` 为假时整个计划直接拒绝
 /// - 删的是**仓库根目录**（源码与 `.git` 一起进废纸篓）——确认弹窗必须把这一点
 ///   写在明处，`is_clean_candidate` 的入选口径也据此收紧（S2 修的是「显示的
@@ -992,14 +1083,16 @@ impl RepoScanner {
             let path = PathBuf::from(id);
             let info = collect_repo(&path, false, &HashSet::new());
 
-            if info.has_unpushed || info.dirty_files > 0 {
+            if !matches!(info.push, Push::Clean) || info.dirty_files > 0 || info.has_stash {
+                let reason = match info.push {
+                    Push::Ahead { .. } => "有未推送提交".into(),
+                    Push::Unknown => "推送状态无法核实（按可能有未推送处理）".into(),
+                    Push::Clean if info.has_stash => "有 stash 未处理".into(),
+                    Push::Clean => format!("{} 处未提交改动", info.dirty_files),
+                };
                 result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: if info.has_unpushed {
-                        "有未推送提交".into()
-                    } else {
-                        format!("{} 处未提交改动", info.dirty_files)
-                    },
+                    reason,
                 });
                 continue;
             }

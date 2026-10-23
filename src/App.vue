@@ -30,6 +30,11 @@ import ByteValue from "@/components/ByteValue.vue";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Toaster } from "@/components/ui/sonner";
 
+// titleBarStyle: Overlay 只对 macOS 生效；Windows 走系统标题栏，webview 从标题栏
+// 下方才开始，侧栏的红绿灯空带在那边是纯空白。口径与 index.html 打 .macos 同帧
+// 标记一致，两边别分家。
+const isMac = /Mac/.test(navigator.userAgent);
+
 const route = useRoute();
 const router = useRouter();
 const { groups, current, activeId, boot } = useAssets();
@@ -206,8 +211,10 @@ onUnmounted(() => {
       class="relative flex w-[208px] shrink-0 flex-col border-r border-border/50 bg-muted/40"
     >
       <!-- 标题栏空带留给系统红绿灯（titleBarStyle: Overlay 下真红绿灯浮在内容上，
-           这里不画假的，也不再放产品名——顶栏已有分组名，侧栏不必再标一次） -->
-      <div class="h-7 shrink-0" data-tauri-drag-region />
+           这里不画假的，也不再放产品名——顶栏已有分组名，侧栏不必再标一次）。
+           仅 macOS 渲染：Windows 忽略 titleBarStyle、系统标题栏在 webview 外面，
+           这条空带只是 28px 死空白（真机上整个侧栏内容跟着下移）。 -->
+      <div v-if="isMac" class="h-7 shrink-0" data-tauri-drag-region />
 
       <ScrollArea class="min-h-0 flex-1">
         <!-- pt-4 不是随便填的：首行上缘实测 32px 时距红绿灯只剩 13px，白色选中 pill

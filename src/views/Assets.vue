@@ -39,8 +39,18 @@ import ByteValue from "@/components/ByteValue.vue";
 import ScanBar from "@/components/ScanBar.vue";
 
 const router = useRouter();
-const { groups, current, loading, error, activeId, progress, cachedAt, rescan } =
-  useAssets();
+const {
+  groups,
+  current,
+  loading,
+  error,
+  activeId,
+  progress,
+  cachedAt,
+  groupSavedAt,
+  rescan,
+  rescanGroup,
+} = useAssets();
 const { theme, toggle: toggleTheme } = useTheme();
 
 /** Windows 上 Overlay 标题栏把原生最小化/最大化/关闭浮在右上，工具栏右侧要留位 */
@@ -333,7 +343,10 @@ function askCleanArtifacts(item: Item) {
   artifactTarget.value = item;
 }
 
-/** 成败 toast + 重扫（缓存里少/变了东西，别让界面停留在旧快照）。 */
+/** 成败 toast + 重扫（缓存里少/变了东西，别让界面停留在旧快照）。
+ *  只重扫被清理的那个分组（`CleanResult.group_id`）：清理只动一组的数据，
+ *  全量重扫要几十秒，其余分组没变，犯不着陪跑。全失败 = 什么都没删成，
+ *  数据没变，不扫。 */
 async function applyCleanResult(r: CleanResult) {
   if (r.succeeded.length > 0) {
     toast.success(`已移入废纸篓，腾出 ${formatBytes(r.freed_bytes)}`);
@@ -342,8 +355,9 @@ async function applyCleanResult(r: CleanResult) {
   for (const f of r.failed) {
     toast.error(f.id === "*" ? f.reason : `${f.id}：${f.reason}`);
   }
+  if (r.succeeded.length === 0) return;
   const before = sizeSnapshot();
-  const res = await rescan();
+  const res = await rescanGroup(r.group_id);
   if (!res.ok) toast.error(res.message);
   else flashChanged(before);
 }
@@ -1040,11 +1054,48 @@ const scanPct = computed(() => {
   return p && p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
 });
 
-const stale = computed(() => cachedAt.value != null && Date.now() / 1000 - cachedAt.value > 86400);
+/** 单组扫描只有一个 0→1 事件，比例条原地 0% 像坏了：改走来回扫的墨线。 */
+const scanIndeterminate = computed(() => progress.value?.total === 1);
+
+/** 当前视图的「数据更新于」基准：组视图取该组自己的扫描时间，总览取各组
+ *  最早值（总览聚合全体，它的新鲜度由最旧的组决定）。单组重扫之后各组
+ *  时间不同，不能拿缓存写入时间冒充全体数据的新鲜度。 */
+const viewSavedAt = computed<number | null>(() => {
+  const id = current.value?.id;
+  if (!id) return cachedAt.value;
+  if (id === "overview") {
+    const times = Object.values(groupSavedAt.value);
+    return times.length ? Math.min(...times) : cachedAt.value;
+  }
+  return groupSavedAt.value[id] ?? cachedAt.value;
+});
+
+const stale = computed(
+  () => viewSavedAt.value != null && Date.now() / 1000 - viewSavedAt.value > 86400,
+);
+
+/** 按钮文案随上下文：组视图 = 重扫本组（秒级）；总览与无数据态 = 全量重扫。
+ *  扫描中区分单组/全量：单组没有多组比例可报（total=1），报正在扫谁。 */
+const rescanLabel = computed(() => {
+  if (!loading.value) return isOverview.value || !current.value ? "重扫" : "重扫本组";
+  const p = progress.value;
+  if (!p) return "扫描中";
+  return p.total === 1
+    ? p.label
+      ? `正在扫描 ${p.label}`
+      : "扫描中"
+    : `扫描中 ${p.done}/${p.total}`;
+});
+
+/** 与 rescanLabel 同一个判据（总览或无数据 = 全量），别让 hover 提示跟实际行为打架。 */
+const rescanTitle = computed(() =>
+  isOverview.value || !current.value ? "重扫全部分组" : "只重扫当前分组，几秒完成",
+);
 
 async function onRescan() {
   const before = sizeSnapshot();
-  const r = await rescan();
+  const gid = current.value?.id;
+  const r = isOverview.value || !gid ? await rescan() : await rescanGroup(gid);
   if (r.ok) {
     flashChanged(before);
     toast.success("扫描完成");
@@ -1168,7 +1219,9 @@ async function onRescan() {
         </button>
       </label>
 
-      <div class="flex shrink-0 items-center gap-1" :class="isWindows ? 'pr-[140px]' : ''">
+      <!-- 别给 Windows 加 caption 按钮避让：它有系统标题栏，窗口按钮不浮在 webview 上，
+           避让只会把重扫推离右缘（pr-[140px] 在 Windows 真机上就是这么露馅的）。 -->
+      <div class="flex shrink-0 items-center gap-1">
         <!-- 图标语义是「点了去哪个模式」：深色里显示太阳（点它回浅色），反之月亮。
              vue-sonner 自己不读 .dark class，theme 必须显式传。 -->
         <Button
@@ -1199,18 +1252,20 @@ async function onRescan() {
           variant="ghost"
           :disabled="loading"
           class="min-w-[4.5rem]"
+          :title="rescanTitle"
           @click="onRescan"
         >
           <RefreshCw :class="loading ? 'motion-safe:animate-spin' : ''" />
-          {{ loading ? (progress ? `扫描中 ${progress.done}/${progress.total}` : "扫描中") : "重扫" }}
+          {{ rescanLabel }}
         </Button>
       </div>
     </div>
 
     <!-- 真实进度条：贴在工具栏下沿（U2），替掉按钮里一个干转的 spinner。
-         U16 起 1px 淡墨线 + 行首笔尖；进度用 transform 走合成层。 -->
+         U16 起 1px 淡墨线 + 行首笔尖；进度用 transform 走合成层。
+         单组扫描没有中间比例，走 indeterminate 的来回墨线。 -->
     <Transition name="fade">
-      <ScanBar v-if="loading" :pct="scanPct" />
+      <ScanBar v-if="loading" :pct="scanPct" :indeterminate="scanIndeterminate" />
     </Transition>
 
     <!-- 错误条：仅记录启动/首次加载失败。重扫失败走 toast -->
@@ -1566,7 +1621,11 @@ async function onRescan() {
                   :title="`${revealLabel}：点任意一行`"
                 />
               </div>
-              <ul class="mt-1">
+              <!-- text-[11px] 必须落在这里：dl 的 11px 是逐元素给的，管不到这个 ul。
+                   右侧体积 span 是块级 flex 项，缺了它就继承容器 16px 字号当 strut，
+                   行盒比 11px 文本高出约 2.5px；items-baseline 把多出的高度全顶在上方，
+                   文字在悬停高亮条里「坐底」。 -->
+              <ul class="mt-1 text-[11px]">
                 <li v-for="(r, i) in artifactRows" :key="i" class="leading-[18px]">
                   <!-- 整行是按钮：点一下在访达 / 资源管理器里定位这个产物目录 -->
                   <button
@@ -1665,15 +1724,16 @@ async function onRescan() {
       </span>
       <div class="flex items-center gap-3">
         <!-- 数据新鲜度挪到状态栏常驻：此前只挂在「重扫」按钮的 title 上，
-             不 hover 就永远不知道眼前这份快照是什么时候的 -->
+             不 hover 就永远不知道眼前这份快照是什么时候的。单组重扫后各分组
+             时间不同，这里按当前视图取对应的扫描时间（总览取最早的组）。 -->
         <span
-          v-if="cachedAt"
-          :key="cachedAt"
+          v-if="viewSavedAt"
+          :key="viewSavedAt"
           class="updated tabular-nums"
           :class="stale ? 'text-foreground' : ''"
-          :title="stale ? '已超过一天，建议重扫' : '缓存快照时间'"
+          :title="stale ? '已超过一天，建议重扫' : '本视图数据的扫描时间'"
         >
-          数据更新于 {{ formatAgo(cachedAt) }}
+          数据更新于 {{ formatAgo(viewSavedAt) }}
         </span>
         <span
           v-if="statusReclaim > 0"
@@ -1764,7 +1824,7 @@ async function onRescan() {
           </div>
           <div class="flex items-baseline justify-between gap-2">
             <dt class="shrink-0 text-muted-foreground">路径</dt>
-            <dd class="min-w-0 truncate font-mono text-[10px]" :title="cleanTarget.path">
+            <dd class="min-w-0 truncate font-mono" :title="cleanTarget.path">
               {{ cleanTarget.path }}
             </dd>
           </div>
@@ -1821,7 +1881,7 @@ async function onRescan() {
           </div>
           <div class="flex items-baseline justify-between gap-2">
             <dt class="shrink-0 text-muted-foreground">路径</dt>
-            <dd class="min-w-0 truncate font-mono text-[10px]" :title="artifactTarget.path">
+            <dd class="min-w-0 truncate font-mono" :title="artifactTarget.path">
               {{ artifactTarget.path }}
             </dd>
           </div>
@@ -1831,17 +1891,24 @@ async function onRescan() {
              末段黑、体积右对齐）。默认全选；取消勾选的目录本次不动。行数封顶
              与 Rust 侧 MAX_DETAIL_ROWS 一致，超出的走「…其余 N 个略」灰字。 -->
         <div class="mt-3">
-          <div class="flex items-center justify-between gap-2">
-            <span class="text-[11px] font-semibold text-muted-foreground">产物目录</span>
-            <label class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <Checkbox
-                :model-value="artifactAllPicked ? true : artifactSomePicked ? 'indeterminate' : false"
-                @update:model-value="(v) => toggleAllArtifacts(v === true)"
-              />
-              全选
-            </label>
-          </div>
-          <ul class="mt-1 max-h-[188px] overflow-y-auto rounded-md bg-muted/50 p-1.5">
+          <!-- 表头勾选框兼作列头，钉在行勾选列正上方：pl-2.5 = 列表盒 p-1.5 +
+               行 px-1，差一像素就读不成一列。半选态表意，可见文案让位给节标题；
+               「全选」语义走 title / aria-label，别把字样加回来——列头勾选框
+               自身就是表格的通用范式。 -->
+          <label
+            class="flex items-center gap-1.5 pl-2.5 text-[11px] text-muted-foreground"
+            title="全选"
+          >
+            <Checkbox
+              aria-label="全选"
+              :model-value="artifactAllPicked ? true : artifactSomePicked ? 'indeterminate' : false"
+              @update:model-value="(v) => toggleAllArtifacts(v === true)"
+            />
+            <span class="font-semibold">产物目录</span>
+          </label>
+          <!-- text-[11px] 与检查器子表同理：不给的话右侧体积 span 以继承的 16px 当 strut，
+               行盒撑到约 19.3px；items-center 下虽对称，但行高偏离 18px 设计密度。 -->
+          <ul class="mt-1 max-h-[188px] overflow-y-auto rounded-md bg-muted/50 p-1.5 text-[11px]">
             <li v-for="(r, i) in artifactDialogRows" :key="i" class="leading-[18px]">
               <!-- items-center 不用 baseline：reka-ui 的框是 button，勾存在与否会改变
                    它的合成基线（mark 在 = 末段底边，不在 = 自身底边），勾选态会跳 3.25px；

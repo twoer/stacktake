@@ -8,6 +8,7 @@ use scan::{
     dev_env::dev_env_scanners, local_models::LocalModelsScanner, repos::RepoScanner,
     toolchain::ToolchainScanner, wsl::wsl_scanners,
 };
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -135,6 +136,8 @@ struct BootPayload {
     groups: Vec<AssetGroup>,
     /// 缓存写入时间。前端渲染成「数据更新于 3 小时前」。
     saved_at: i64,
+    /// 各分组各自的写入时间（语义见 [`ScanResult::group_saved_at`]）。
+    group_saved_at: BTreeMap<String, i64>,
     /// 本次是否真的扫描了。`false` = 吃的缓存。
     scanned: bool,
 }
@@ -145,10 +148,15 @@ struct BootPayload {
 /// `Date.now()` 近似会让「数据更新于 X」凭空多算一个扫描时长；而且缓存写失败时
 /// 前后端就对不上了。它就是 `cache::save` 真正写进文件的那个时间戳，
 /// 所以「刚扫完」与「重启后读同一份缓存」看到的基准是同一个。
+///
+/// `group_saved_at` 是各分组各自的写入时间：单组重扫之后不同分组的新鲜度不同，
+/// 「数据更新于」要按当前视图取对应组的时间，不能拿信封级 `saved_at` 冒充
+/// 全体数据的新鲜度。全量扫描时全部等于 `saved_at`。
 #[derive(Clone, serde::Serialize)]
 struct ScanResult {
     groups: Vec<AssetGroup>,
     saved_at: i64,
+    group_saved_at: BTreeMap<String, i64>,
 }
 
 /// 扫描进度事件名。前端 `useAssets.ts` 里监听同一个名字（两边没有共享常量机制，
@@ -227,10 +235,144 @@ async fn run_full_scan(app: &AppHandle) -> Result<ScanResult, String> {
     {
         saved_at = ts;
     }
+    // 全量扫描：所有分组同一时刻，逐组时间戳与信封级时间一致
+    let group_saved_at: BTreeMap<String, i64> =
+        groups.iter().map(|g| (g.id.clone(), saved_at)).collect();
     Ok(ScanResult {
         groups: with_overview(groups),
         saved_at,
+        group_saved_at,
     })
+}
+
+/// 单组重扫对「id 挑不到 Scanner」的两种处理。
+#[derive(Debug, PartialEq, Eq)]
+enum MissingGroupFallback {
+    /// id 已知但 Scanner 没注册：环境没了（探测型 Scanner 的目录被删，如卸载
+    /// 了 Ollama）。从缓存摘除该组——与全量重扫的语义一致：环境没了的分组
+    /// 不再显示（硬约束 8 的「不存在就不注册」在缓存侧的延续）。
+    RemoveGroup,
+    /// id 完全未知（不在 [`scan::GROUP_ORDER`]，或被 [`HIDDEN_GROUPS`] 撤下）：
+    /// 拒绝而不是静默吞掉，未知 id 走到这里只可能是调用方的 bug。
+    Reject,
+}
+
+/// 单组重扫的决策点。**纯函数**：只看 id 与两张名单，喂样本即可测。
+fn missing_group_fallback(group_id: &str) -> MissingGroupFallback {
+    if scan::GROUP_ORDER.contains(&group_id) && !HIDDEN_GROUPS.contains(&group_id) {
+        MissingGroupFallback::RemoveGroup
+    } else {
+        MissingGroupFallback::Reject
+    }
+}
+
+/// 从缓存摘除一个分组并返回合并结果。缓存读不到就没什么可摘——那种情况下
+/// 直接回退全量，维持「缓存永远是全部已注册分组的完整快照」这条不变量。
+async fn remove_group_from_cache(app: &AppHandle, group_id: &str) -> Result<ScanResult, String> {
+    let Some(dir) = data_dir(app).ok() else {
+        return run_full_scan(app).await;
+    };
+    let Some(snap) = cache::load(&dir) else {
+        return run_full_scan(app).await;
+    };
+    let groups: Vec<AssetGroup> = snap
+        .groups
+        .into_iter()
+        .filter(|g| g.id != group_id)
+        .collect();
+    let group_saved_at: BTreeMap<String, i64> = snap
+        .group_saved_at
+        .into_iter()
+        .filter(|(id, _)| id != group_id)
+        .collect();
+    if groups.is_empty() {
+        return run_full_scan(app).await;
+    }
+    let saved_at = cache::save_with_times(&dir, &groups, &group_saved_at)
+        .unwrap_or_else(|_| cache::now_secs());
+    Ok(ScanResult {
+        groups: with_overview(groups),
+        saved_at,
+        group_saved_at,
+    })
+}
+
+/// 单组重扫的执行体。只重扫一个分组，其余分组沿用缓存里的旧快照。
+///
+/// 缓存读不到（被清空、schema 升级后的首次启动）时回退全量：**缓存必须永远
+/// 是完整快照**，落成单组的部分快照会让启动显示缺组的侧栏，缺的那组看起来
+/// 像环境没了（与硬约束 8 要避免的空分组误导是同一类问题）。
+///
+/// **这不是 H1/C1 时代删掉的 `scan_group`**：那个是启动期的按组懒加载，前端
+/// 没采用而删（docs/archive/track-c.md）；这个是用户显式发起的增量重扫，且
+/// 合并在服务端做——返回合并 + 重排 + 总览后的完整分组列表，前端整表替换。
+async fn run_group_scan(app: &AppHandle, group_id: &str) -> Result<ScanResult, String> {
+    let Some(scanner) = scanners_with_roots(roots::default_roots())
+        .into_iter()
+        .find(|s| s.id() == group_id)
+    else {
+        return match missing_group_fallback(group_id) {
+            MissingGroupFallback::RemoveGroup => remove_group_from_cache(app, group_id).await,
+            MissingGroupFallback::Reject => Err(format!("未知分组：{group_id}")),
+        };
+    };
+
+    let Some(dir) = data_dir(app).ok() else {
+        return run_full_scan(app).await;
+    };
+    let Some(snap) = cache::load(&dir) else {
+        return run_full_scan(app).await;
+    };
+
+    // 与 run_full_scan 同一个 emit 节奏：开扫报一次 0/1，扫完报一次 1/1。
+    // total=1 是前端识别「单组扫描」的依据（全量扫描的 total 恒 ≥ 4）。
+    // 开扫那次就带上组名——单组没有「各分组完成进度」可报，第一拍起按钮
+    // 就能显示「正在扫描 <组名>」，而不是干等扫完才冒出名字。
+    let app_for_scan = app.clone();
+    let group_label = scanner.label();
+    let fresh = tauri::async_runtime::spawn_blocking(move || {
+        let _ = app_for_scan.emit(
+            SCAN_PROGRESS_EVENT,
+            ScanProgress {
+                done: 0,
+                total: 1,
+                label: group_label.to_string(),
+            },
+        );
+        let g = scanner.scan();
+        let _ = app_for_scan.emit(
+            SCAN_PROGRESS_EVENT,
+            ScanProgress {
+                done: 1,
+                total: 1,
+                label: g.label.clone(),
+            },
+        );
+        g
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // 并入缓存：被重扫的组记本次时间，其余组保留各自的旧时间——「数据更新于」
+    // 逐组取值才不会拿最新时间冒充全体新鲜度。
+    let mut times = snap.group_saved_at;
+    times.insert(fresh.id.clone(), cache::now_secs());
+    let groups = scan::upsert_group(snap.groups, fresh);
+    let saved_at =
+        cache::save_with_times(&dir, &groups, &times).unwrap_or_else(|_| cache::now_secs());
+
+    Ok(ScanResult {
+        groups: with_overview(groups),
+        saved_at,
+        group_saved_at: times,
+    })
+}
+
+/// 单组重扫。典型入口：清理完成后的自动刷新（只刷被清理的分组）与组视图
+/// 工具栏的「重扫本组」。执行必须人显式发起——硬约束 1 只禁「启动时自动扫描」。
+#[tauri::command]
+async fn rescan_group(app: AppHandle, group_id: String) -> Result<ScanResult, String> {
+    run_group_scan(&app, &group_id).await
 }
 
 /// 启动：有缓存用缓存，没缓存才扫。
@@ -247,6 +389,7 @@ async fn bootstrap(app: AppHandle) -> Result<BootPayload, String> {
             // 总览现算：缓存里不存它（存了就会出现「缓存里的总览与分组对不上」）
             groups: with_overview(snap.groups),
             saved_at: snap.saved_at,
+            group_saved_at: snap.group_saved_at,
             scanned: false,
         });
     }
@@ -256,6 +399,7 @@ async fn bootstrap(app: AppHandle) -> Result<BootPayload, String> {
     Ok(BootPayload {
         groups: r.groups,
         saved_at: r.saved_at,
+        group_saved_at: r.group_saved_at,
         scanned: true,
     })
 }
@@ -356,6 +500,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             rescan_now,
+            rescan_group,
             clear_cache,
             reveal_path,
             clean_items,

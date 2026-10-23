@@ -16,6 +16,12 @@ const error = ref<string | null>(null);
 /** 缓存写入时间。手动重扫成功后更新。 */
 const cachedAt = ref<number | null>(null);
 /**
+ * 各分组各自的写入时间。单组重扫后不同分组的新鲜度不同，「数据更新于」
+ * 要按当前视图取对应组的时间，不能拿全体写入时间冒充。全量扫描时所有
+ * 值与 cachedAt 相同。
+ */
+const groupSavedAt = ref<Record<string, number>>({});
+/**
  * 扫描进度。Rust 侧每完成一个分组 emit 一次（事件名 "scan-progress"，
  * 与 lib.rs::SCAN_PROGRESS_EVENT 一致），顶栏据此画真实进度条。
  * 没有扫描时为 null。
@@ -55,6 +61,7 @@ export function useAssets() {
       const payload = await invoke<BootPayload>("bootstrap");
       groups.value = payload.groups;
       cachedAt.value = payload.saved_at;
+      groupSavedAt.value = payload.group_saved_at;
     } catch (e) {
       error.value = String(e);
     } finally {
@@ -73,6 +80,7 @@ export function useAssets() {
       const next = await invoke<ScanResult>("rescan_now");
       groups.value = next.groups;
       cachedAt.value = next.saved_at;
+      groupSavedAt.value = next.group_saved_at;
       return { ok: true };
     } catch (e) {
       return { ok: false, message: String(e) };
@@ -82,5 +90,40 @@ export function useAssets() {
     }
   }
 
-  return { groups, loading, error, cachedAt, progress, activeId, current, boot, rescan };
+  /**
+   * 单组重扫：只扫一个分组，其余沿用缓存旧快照（合并在后端做，这里整表替换）。
+   * 与 rescan 共用同一套 loading/progress 状态机；进度事件 total=1。
+   */
+  async function rescanGroup(
+    groupId: string,
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    loading.value = true;
+    progress.value = null;
+    try {
+      const next = await invoke<ScanResult>("rescan_group", { groupId });
+      groups.value = next.groups;
+      cachedAt.value = next.saved_at;
+      groupSavedAt.value = next.group_saved_at;
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, message: String(e) };
+    } finally {
+      loading.value = false;
+      progress.value = null;
+    }
+  }
+
+  return {
+    groups,
+    loading,
+    error,
+    cachedAt,
+    groupSavedAt,
+    progress,
+    activeId,
+    current,
+    boot,
+    rescan,
+    rescanGroup,
+  };
 }

@@ -63,6 +63,8 @@ export interface AssetGroup {
 export interface CachedSnapshot {
   groups: AssetGroup[]
   saved_at: number
+  /** 各分组各自的写入时间，语义见 ScanResult */
+  group_saved_at: Record<string, number>
   age_seconds: number
 }
 
@@ -70,19 +72,26 @@ export interface CachedSnapshot {
 export interface BootPayload {
   groups: AssetGroup[]
   saved_at: number
+  /** 各分组各自的写入时间，语义见 ScanResult */
+  group_saved_at: Record<string, number>
   /** 本次是否真的扫描了。false = 吃的缓存 */
   scanned: boolean
 }
 
 /**
- * Rust `lib.rs::ScanResult` 的对应结构——扫描命令（`rescan_now` / `scan_all`）的返回。
+ * Rust `lib.rs::ScanResult` 的对应结构——扫描命令（`rescan_now` / `rescan_group`）的返回。
  *
  * `saved_at` 以后端为准：前端自己用 `Date.now()` 近似会带上一次扫描的时长偏差
  * （全量扫描几十秒到几分钟），而它就是缓存文件里真正写下的那个时间戳。
+ *
+ * `group_saved_at` 是各分组各自的写入时间：单组重扫后不同分组的新鲜度不同，
+ * 「数据更新于」要按当前视图取对应组的时间，不能拿全体写入时间冒充。
+ * 全量扫描时所有值都等于 `saved_at`。
  */
 export interface ScanResult {
   groups: AssetGroup[]
   saved_at: number
+  group_saved_at: Record<string, number>
 }
 
 /**

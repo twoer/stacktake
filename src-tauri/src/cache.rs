@@ -28,6 +28,7 @@
 
 use crate::scan::AssetGroup;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// 缓存文件格式版本。`AssetGroup` 结构变更时 +1，旧缓存自动作废。
@@ -59,7 +60,17 @@ use std::path::{Path, PathBuf};
 /// **第七种：暂时隐藏分组**（H14，13 → 14）。java 与 harmony 两组从侧栏撤下、
 /// 扫描器代码原样保留——对缓存的影响与「移除 Scanner」完全相同：老快照里还挂着
 /// 这两组，版本不变的话它们会一直显示到用户点「重扫」，而界面上没有任何提示。
-pub const SCHEMA_VERSION: u32 = 14;
+///
+/// **第八种：单组重扫与逐组时间戳**（14 → 15）。信封新增 `group_saved_at`：
+/// 单组重扫之后不同分组的新鲜度不同，只有信封级 `saved_at` 的话，「数据更新于」
+/// 会拿最新一次写入的时间冒充全体数据的新鲜度。老缓存里没有这份映射，
+/// 各分组读不出各自的扫描时间，作废走一次首扫。
+///
+/// **第九种：repos 清理口径收紧**（15 → 16）。推送状态核查改 fail-closed
+/// （没配 upstream / detached HEAD / git 失败的仓库从前按「无未推送」放行）、
+/// stash 非空开始一票否决——老缓存里这些仓库的 `cleanable` 是按旧口径算的，
+/// 不作废的话账面会宣称一批点下去会被拒的「可回收」。
+pub const SCHEMA_VERSION: u32 = 16;
 
 const CACHE_FILE: &str = "scan-cache.json";
 
@@ -69,6 +80,11 @@ pub struct CacheEnvelope {
     pub schema: u32,
     /// 写入时的 unix 时间戳（秒），用于「数据更新于 X」提示
     pub saved_at: i64,
+    /// 各分组各自的写入时间。全量扫描时全部等于 `saved_at`；单组重扫后只有
+    /// 被重扫的组更新，其余组保留旧值——「数据更新于」按它逐组取，不拿
+    /// 信封级时间冒充全体新鲜度。BTreeMap 让 JSON 键序确定（detail 的
+    /// HashMap 键序教训，见 scan::Item）。
+    pub group_saved_at: BTreeMap<String, i64>,
     pub groups: Vec<AssetGroup>,
 }
 
@@ -77,6 +93,8 @@ pub struct CacheEnvelope {
 pub struct CachedSnapshot {
     pub groups: Vec<AssetGroup>,
     pub saved_at: i64,
+    /// 各分组各自的写入时间，语义见 [`CacheEnvelope::group_saved_at`]。
+    pub group_saved_at: BTreeMap<String, i64>,
     /// 距今多久（秒），前端渲染成「3 小时前更新」
     pub age_seconds: i64,
 }
@@ -101,6 +119,7 @@ pub fn load(app_data_dir: &Path) -> Option<CachedSnapshot> {
     Some(CachedSnapshot {
         groups: env.groups,
         saved_at: env.saved_at,
+        group_saved_at: env.group_saved_at,
         // 时钟回拨会让 age 变负，钳到 0
         age_seconds: age.max(0),
     })
@@ -112,11 +131,31 @@ pub fn load(app_data_dir: &Path) -> Option<CachedSnapshot> {
 /// 「数据更新于 X」的基准：前端自己用 `Date.now()` 近似会带上一次扫描的时长偏差
 /// （一次全量扫描几十秒到几分钟），而且缓存写失败时两边就对不上了。
 pub fn save(app_data_dir: &Path, groups: &[AssetGroup]) -> std::io::Result<i64> {
+    save_with_times(app_data_dir, groups, &BTreeMap::new())
+}
+
+/// 同 [`save`]，但各分组的写入时间由调用方给。单组重扫用：只有被重扫的组记
+/// 新时间，其余组沿用它们上一次的值。映射里缺的组按**本次**写入时间记——
+/// 调用方（`lib.rs::run_group_scan`）负责把旧映射传进来，这里不读旧缓存。
+pub fn save_with_times(
+    app_data_dir: &Path,
+    groups: &[AssetGroup],
+    group_saved_at: &BTreeMap<String, i64>,
+) -> std::io::Result<i64> {
     std::fs::create_dir_all(app_data_dir)?;
 
+    let now = now_secs();
+    let times: BTreeMap<String, i64> = groups
+        .iter()
+        .map(|g| {
+            let t = group_saved_at.get(&g.id).copied().unwrap_or(now);
+            (g.id.clone(), t)
+        })
+        .collect();
     let env = CacheEnvelope {
         schema: SCHEMA_VERSION,
-        saved_at: now_secs(),
+        saved_at: now,
+        group_saved_at: times,
         groups: groups.to_vec(),
     };
     let json = serde_json::to_string(&env)
