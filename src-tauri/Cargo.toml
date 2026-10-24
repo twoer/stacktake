@@ -1,6 +1,6 @@
 [package]
 name = "stacktake"
-version = "0.1.7"
+version = "0.1.8"
 description = "本机资产清点台账"
 authors = ["twoer"]
 license = "MIT"
