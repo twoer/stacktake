@@ -482,6 +482,7 @@ impl Scanner for DockerScanner {
                 path: format!("docker://{label}"),
                 metrics,
                 detail: Some(detail),
+                artifact_entries: vec![],
                 // 回收量用独占层而不是虚拟大小：共享层删了这个镜像也还在别的镜像里，
                 // 按虚拟大小报会重复计算，点一次清理发现没腾出那么多空间。
                 //
@@ -532,6 +533,7 @@ impl Scanner for DockerScanner {
                 path: format!("docker://volume/{}", v.name),
                 metrics,
                 detail: Some(detail),
+                artifact_entries: vec![],
                 cleanable: unused,
                 reclaimable: if unused { Some(v.size) } else { None },
             });

@@ -51,12 +51,20 @@ pub struct AiToolsScanner {
 pub struct Tool {
     label: String,
     root: PathBuf,
+    allow_clean: bool,
 }
 
 impl AiToolsScanner {
     pub fn new(home: PathBuf) -> Self {
         Self {
             tools: tools_for(&home, Platform::current()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn on(home: &Path, platform: Platform) -> Self {
+        Self {
+            tools: tools_for(home, platform),
         }
     }
 }
@@ -242,8 +250,42 @@ const EDITOR_SPECS: [(&str, &str, &str); 4] = [
     ),
 ];
 
-/// 按平台解析出的工具与编辑器清单。`pub(crate)` 是为了让测试能喂假 home +
-/// `Platform::Windows` 断言 Windows 那半条映射（本机是 macOS）。
+// None 表示没有单独的 macOS 映射，不把 Windows 目录布局套过去。
+const READ_ONLY_SPECS: [(&str, Option<&str>, &str); 14] = [
+    ("DeepSeek Harness", Some(".dsh"), ".dsh"),
+    (
+        "DeepSeek Harness 桌面版",
+        Some("Library/Application Support/@deepseek-ai/dsh-desktop"),
+        "AppData/Roaming/@deepseek-ai/dsh-desktop",
+    ),
+    (
+        "Warp",
+        Some(
+            "Library/Group Containers/2BBY89MBSN.dev.warp/Library/Application Support/dev.warp.Warp-Stable",
+        ),
+        "AppData/Local/warp/Warp/data",
+    ),
+    ("Warp 配置", Some(".warp"), "AppData/Roaming/warp/Warp/data"),
+    ("Warp 本地配置", None, "AppData/Local/warp/Warp/config"),
+    ("OpenClaw", Some(".openclaw"), ".openclaw"),
+    ("ZCode", Some(".zcode"), ".zcode"),
+    (
+        "ZCode 桌面版",
+        Some("Library/Application Support/ZCode"),
+        "AppData/Roaming/ZCode",
+    ),
+    ("灵码", Some(".lingma"), ".lingma"),
+    ("灵码 本地数据", None, "AppData/Local/.lingma"),
+    ("Qwen Agent", None, ".qwen-agent"),
+    ("Qoder CLI", None, ".qoder-cli"),
+    (
+        "Qoder 桌面版",
+        Some("Library/Application Support/com.qoder.app.stable"),
+        "AppData/Roaming/com.qoder.app.stable",
+    ),
+    ("Qoder IDE", None, "AppData/Roaming/Qoder"),
+];
+
 pub(crate) fn tools_for(home: &Path, platform: Platform) -> Vec<Tool> {
     let mut tools: Vec<Tool> = Vec::new();
     let mut jb_cache: Option<PathBuf> = None;
@@ -262,6 +304,7 @@ pub(crate) fn tools_for(home: &Path, platform: Platform) -> Vec<Tool> {
         tools.push(Tool {
             label: label.into(),
             root,
+            allow_clean: true,
         });
     }
 
@@ -277,7 +320,24 @@ pub(crate) fn tools_for(home: &Path, platform: Platform) -> Vec<Tool> {
         root.exists().then(|| Tool {
             label: (*label).into(),
             root,
+            allow_clean: true,
         })
+    }));
+
+    tools.extend(READ_ONLY_SPECS.iter().filter_map(|(label, mac, win)| {
+        let rel = if platform.is_windows() {
+            Some(*win)
+        } else {
+            *mac
+        }?;
+        let root = home.join(rel);
+        std::fs::symlink_metadata(&root)
+            .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+            .then(|| Tool {
+                label: (*label).into(),
+                root,
+                allow_clean: false,
+            })
     }));
 
     tools
@@ -289,6 +349,7 @@ fn expand_products(root: &Path) -> Vec<Tool> {
         return vec![Tool {
             label: "JetBrains 缓存".into(),
             root: root.to_path_buf(),
+            allow_clean: true,
         }];
     };
     // `file_type()` 不跟随链接：指向别处的软链产品目录不算进来（同 collect_entries）
@@ -301,6 +362,7 @@ fn expand_products(root: &Path) -> Vec<Tool> {
         return vec![Tool {
             label: "JetBrains 缓存".into(),
             root: root.to_path_buf(),
+            allow_clean: true,
         }];
     }
     subs.sort();
@@ -313,6 +375,7 @@ fn expand_products(root: &Path) -> Vec<Tool> {
             Tool {
                 label: format!("JetBrains {name}"),
                 root: p,
+                allow_clean: true,
             }
         })
         .collect()
@@ -385,7 +448,7 @@ fn aggregate(tools: &[Tool], entries: &[RawEntry]) -> Vec<Item> {
             let size: u64 = group.iter().map(|e| e.size).sum();
             let last_activity = group.iter().filter_map(|e| e.mtime).max();
             let tool = &tools[ti];
-            let cleanable = cat.cleanable();
+            let cleanable = tool.allow_clean && cat.cleanable();
 
             let mut detail: HashMap<String, String> = HashMap::new();
             // 键名必须前缀化：`Item.detail` 是 HashMap，序列化顺序不确定，
@@ -396,6 +459,9 @@ fn aggregate(tools: &[Tool], entries: &[RawEntry]) -> Vec<Item> {
                 detail.insert(format!("{}. {}", i + 1, e.name), human_bytes(e.size));
             }
             detail.insert(format!("{}. 条目", shown + 1), group.len().to_string());
+            if !tool.allow_clean {
+                detail.insert(format!("{}. 清理", shown + 2), "仅统计，不开放清理".into());
+            }
 
             let mut metrics: HashMap<String, MetricValue> = HashMap::new();
             metrics.insert("size".into(), MetricValue::Bytes(size));
@@ -428,6 +494,7 @@ fn aggregate(tools: &[Tool], entries: &[RawEntry]) -> Vec<Item> {
                 path: tool.root.display().to_string(),
                 metrics,
                 detail: Some(detail),
+                artifact_entries: vec![],
                 cleanable,
                 reclaimable: if cleanable { Some(size) } else { None },
             };
@@ -524,6 +591,13 @@ impl AiToolsScanner {
                 });
                 continue;
             };
+            if !tool.allow_clean {
+                result.failed.push(CleanFailure {
+                    id: id.clone(),
+                    reason: "该工具目录仅统计，不开放清理".into(),
+                });
+                continue;
+            }
 
             let candidates = clean_candidates(&tool.root, cat);
             if candidates.is_empty() {
@@ -604,7 +678,7 @@ impl Scanner for AiToolsScanner {
                 fields: ai_fields(),
                 items: vec![],
                 notes: Some(vec![
-                    "扫描位置是白名单里的已知路径：AI 编码工具的 dot-dir + 编辑器数据目录（VS Code 的 ~/.vscode 与用户数据、JetBrains 的配置与缓存，见 ai_tools.rs 的两张 SPECS 表）。不 glob ~/.*，免得扫到 .ssh、.aws 这类敏感目录".into(),
+                    "扫描位置仅限白名单中的 AI 工具与编辑器数据目录（见 ai_tools.rs 的 SPECS 表），不存在就跳过；不搜索整个主目录，不读取文件内容".into(),
                 ]),
                 error: None,
                 supports_clean: true,

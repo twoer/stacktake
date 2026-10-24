@@ -64,6 +64,12 @@ impl MetricValue {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactEntry {
+    pub relative_path: String,
+    pub size_bytes: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Item {
     pub id: String,
@@ -84,6 +90,8 @@ pub struct Item {
     pub metrics: HashMap<String, MetricValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifact_entries: Vec<ArtifactEntry>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cleanable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -223,6 +231,7 @@ pub fn synthesize_overview(groups: &[AssetGroup]) -> AssetGroup {
                 ("count".into(), MetricValue::Int(g.items.len() as i64)),
             ]),
             detail: None,
+            artifact_entries: vec![],
             cleanable: false,
             reclaimable: None,
         })

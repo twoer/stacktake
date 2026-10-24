@@ -20,11 +20,11 @@ Scanner trait → AssetGroup → scan-cache.json → tauri command → Vue 表�
   - `Item.detail` 是 `HashMap<String, String>`，序列化顺序不确定、前端按对象键序渲染——要排序就键名前缀编号（`"1. logs"`）。
   - **分节与筛选读 `Item.group_key`，不解析名字**。`Some(值)` = 本条属于某维度取值（同值做小节标题、显示小计，行名剥 ` · ` 前缀），`None` = 本组不分节。维度名由前端按分组声明（`Assets.vue` 的 `PREFIX_LABEL`），只有真有 ≥2 个取值的维度才出筛选按钮。给了 `group_key` 的名字必须以 `key · ` 开头（两边契约都断言）。标签只放筛选真正需要的（如「可清理」）——类别、工具名别做成标签，行里重复显示挤爆单行 tab。
 - `src/lib/types.ts` 是 Rust 结构的镜像，改 Rust 结构必须同步。**字段名逐字一致（snake_case，没有 `rename_all`）**——多单词字段写驼峰 vue-tsc 抓不到（类型是自己声明的，G1 踩过）。
-- `examples/dump.rs` 走 `scanners()`，**不要另写一份列表**（早先另写过一份，新增 Scanner 后示例与 app 对不上）。它输出的分组与 app 一致：`scanners()` + 现算总览。app 真实路径是 `run_full_scan` → `scanners_with_roots(roots::default_roots())`，与 `scanners()` 同源，所以示例与 app 永远一致（不像 C1 时代还有「配没配过」的岔路）。
+- `examples/dump.rs` 与 app 都走 `scanners_with_roots(roots::for_scan(app_data_dir))` + 现算总览，读取同一份补充目录配置，**不要另写扫描器列表或漏掉补充目录**。`scanners()` 保留作默认目录入口与注册测试。
 - 现有扫描器：`repos` / `toolchain`（包管理器与工具链缓存）/ `ai_tools`（label「**编辑器与 AI 工具**」）/ `local_models`（Ollama / LM Studio / HuggingFace）/ `dev_env`（Java 与移动端）/ `wsl`（发行版虚拟磁盘，**仅 Windows 注册**）。**跟环境装没装有关的（dev_env、toolchain、local_models、wsl）走「不存在就不注册」**，见硬约束 8。**`ssh` 与 `docker` 已实现但未注册**（D6 拍板不进 V1，H3 移出注册），两个文件刻意保留在树里（重新注册只是一行），**别顺手加回来**。**`java` / `harmony` 暂时隐藏**（H14，2026-10-20）：`dev_env` 照常构造与测试，`lib.rs` 注册时按 `HIDDEN_GROUPS` 撤下；恢复 = 清名单 + 改 `scanner_registration_is_pinned` 两条断言 + SCHEMA_VERSION +1。
 - **`scanners()` 注册顺序 = 侧栏顺序 = `scan::GROUP_ORDER` 固定语义序**（D13）：repos → java → ios → android → harmony → toolchain → ai_tools → local_models → wsl（源码 → 环境 → 缓存 → 工具 → 模型 → 虚拟机）。**不按体积排序**——顺序随数据跳会丢失空间记忆。`with_overview` 两条路径（扫完 / 读缓存）都按它重排并插入总览，**缓存里的旧顺序也显示为新序**。未知 id 排最后；新增分组须登记 `GROUP_ORDER`（`scanner_registration_follows_group_order` 守着）。总览**不在** `scanners()`——由 `scan::synthesize_overview` 现算（纯函数，不碰磁盘），行顺序同序。**缓存里不存总览**：否则总览与分组会对不上。总览行 id 是 `overview:<分组id>`、path 是 `overview://<分组id>`（不是宿主机路径，`isLocalPath()` 天然不给动作）。
 - `run_full_scan` 用 rayon **并行**跑各扫描器（`Scanner: Send + Sync` 为此加）。但并行只能收回一部分：体积统计密集型扫描器并发会互相拖慢（APFS 元数据操作在设备层排队），别指望并行把总时间压回单组之和以下。
-- **「Git 仓库」的扫描根目录固定，不可配置**：`roots.rs` 的 `default_roots()` = `~/Documents/Code`、`~/Projects`、`~/Developer`、`~/code`、`~/src`、`~/workspace`（**存在才收**，一个都没有时兜底 `~/Documents`）。`RepoScanner` 有空 roots 守卫（拿不到 home 时报「未配置根目录」不 panic）。**这里曾经可配置**（C1 刀 / D2 拍板选 A：设置页增删、落盘 `scan-config.json`、三个 command、改根目录即废缓存），2026-10-19 由用户拍板整个删掉，模块随之从 `config.rs` 改名 `roots.rs`。删的三条理由与「将来要不要加回来」的判据都写在 `roots.rs` 的模块注释里——**想加回来看那段，别照着旧文档照搬**。已知代价：硬编码的六个候选名必然漏掉不在这个命名习惯里的代码目录（外置盘、公司强制路径），这个代价是被接受了的，不是没发现。设置页（`views/Settings.vue`，路由 `/settings`）现在只有「缓存」与「更新」两节。
+- **「Git 仓库」默认位置只读，允许补充目录**：`roots::default_roots()` 探测 `~/Documents/Code`、`~/Projects`、`~/Developer`、`~/code`、`~/src`、`~/workspace`（只收存在的目录，全无时兜底 `~/Documents`）。真实空状态提供「补充目录」原生选择器，设置「Git 仓库扫描目录」统一添加/移除，**只影响 repos、不全盘搜索、移除不删除文件**。补充目录落盘 `repo-roots.json`，清缓存保留配置；离线目录保留且可移除。全量/单组/清理共用 `roots::for_scan`。**补充目录不接受与现有范围重叠**（`roots::overlap_of`：同一处、互为父子都拒，Windows 上路径比较不分大小写），判据是纯函数、两种大小写口径都能测；仓库层面仍按路径去重（补充目录与默认位置指向同一棵树时同一仓库只记一次）。增删后只重扫 repos（无缓存才全量）；配置与扫描由同一锁串行，缓存记录补充范围，若配置已写入但扫描中断，启动隐藏旧 repos 结果并提示手动重扫，**不触发后台扫描**。
 - **前端形态（原型 v3 为基准）**：侧栏通高（`titleBarStyle: "Overlay"` + `hiddenTitle`，空区与工具栏挂 `data-tauri-drag-region`），主区「列表 + 右侧 252px 检查器」主从结构（窗口 <1040 默认收起），工具栏承载维度筛选（弹出菜单带计数）、搜索、外观切换、重扫与「数据更新于」。窗口 1180×760 / minWidth 880。动作面：访达中显示在检查器动作条；复制路径只在行右键菜单（2026-10-19 从检查器动作条收掉，别两边各挂一个）。
 
 ## 硬约束
@@ -115,7 +115,7 @@ G3 起 toolchain 组里有版本管理器（nvm / fnm / volta / pyenv / conda / 
 
 逐条细节（路径映射、体积口径、各分组边界、WSL、PATH 兜底）在 [docs/known-limits.md](./docs/known-limits.md)——**改对应模块前必读**。最容易踩的结论：
 
-- 「Git 仓库」的扫描根目录固定六个候选名，不可配；环境变量改位置（`NVM_DIR` 等）一概认不出来。
+- 「Git 仓库」默认六个候选名，范围之外需通过原生选择器补充；其它分组仍不识别环境变量改过的位置（`NVM_DIR` 等）。
 - Windows 路径多为按惯例推导，**CI 绿 ≠ 路径核对过**；推错只漏显示、不出错数。
 - AI 工具与工具链缓存都是白名单，不是 glob；`vendor` / Ruby `vendor/bundle` 刻意不算构建产物。
 - 体积口径是「占用空间」（Unix `st_blocks * 512`，Windows 暂退回逻辑大小），**单趟遍历内硬链接按 (dev, inode) 去重**（S4；跨行共享的硬链接各算各的，行加总可以大于全局唯一字节数）；不 shell out 到 `du`；60 秒超时是真超时。
@@ -174,12 +174,12 @@ cd src-tauri && cargo test                # 只跑 Rust 测试（本机真实数
 cd src-tauri && cargo run --example dump  # 扫一次写缓存再读回，输出 JSON 供人工核对
 ```
 
-测试目前 138 passed + 2 ignored（约 6 秒；ignored 的是对照 bench `bench_native_size_vs_du` 与真实数据守恒检查 `repo_nesting_real_data_stays_conserved`）。**用例数随刀增长，改了扫描逻辑顺手更新这个数**——它过期时最容易骗人。**扫描逻辑的测试优先喂临时目录、不依赖本机装了什么**，且**测试要自己写一份独立实现当基准**（`tree_bytes`），别拿被测代码当 oracle——两边一起错会一起绿；反过来，扫真实数据的用例容差要按「数据是活的」给，不能用它证明精度。各 Scanner 的测试思路范例（docker 喂真实 CLI 输出、toolchain 全喂假 home、WSL 读取走注入——「本机不注册」不等于「没测」）见 appendix。
+测试目前 151 passed + 2 ignored（约 6 秒；ignored 的是对照 bench `bench_native_size_vs_du` 与真实数据守恒检查 `repo_nesting_real_data_stays_conserved`）。**用例数随刀增长，改了扫描逻辑顺手更新这个数**——它过期时最容易骗人。**扫描逻辑的测试优先喂临时目录、不依赖本机装了什么**，且**测试要自己写一份独立实现当基准**（`tree_bytes`），别拿被测代码当 oracle——两边一起错会一起绿；反过来，扫真实数据的用例容差要按「数据是活的」给，不能用它证明精度。各 Scanner 的测试思路范例（docker 喂真实 CLI 输出、toolchain 全喂假 home、WSL 读取走注入——「本机不注册」不等于「没测」）见 appendix。
 
 ## 代码风格
 
 - Rust 注释解释**为什么**，不解释代码在做什么。现有的决策注释（启动策略、untagged 的坑）是范例。
-- 前端 UI 走紧凑路线：小字号、无横向滚动条、不显示冗余信息。主从结构（列表 + 检查器）替掉了「行内展开」，工具栏的维度筛选是弹出菜单不是一排 pill——**别把筛选塞回标签行**。侧栏 208px / 检查器 252px / 行高 26px（分组视图；总览分组行放大一档）/ 控件 24px 是定下的密度，改前先看 `src/views/Assets.vue`。视觉身份「纸账本」（U14/U15）：配色只出自 `style.css` token（暖纸/墨，组件不挑 Tailwind 色号），数字用正文字体 tabular（mono 只给分支/路径），绿只经 `--reclaim` 表「可回收」；行界靠 1px 行线，**不画行背景条、不做药丸标签、UI 不自我解释**——都是生成式界面指纹，删过别加回来。侧栏图标 2026-10-21 重开 U15：**只用一套 Lucide、单色随行文字，未知分组回落 `Boxes`**，别混库、别上彩色。改动配色先跑 `node scripts/contrast.mjs`；UI 改动用无头浏览器对 dist 产物截图自验。
+- 前端 UI 走紧凑路线：小字号、无横向滚动条、不显示冗余信息。主从结构（列表 + 检查器）替掉了「行内展开」，工具栏的维度筛选是弹出菜单不是一排 pill——**别把筛选塞回标签行**。侧栏 208px / 检查器 252px / 行高 26px（分组视图；总览分组行放大一档）/ 控件 24px 是定下的密度，改前先看 `src/views/Assets.vue`。视觉身份「纸账本」（U14/U15）：配色只出自 `style.css` token（暖纸/墨，组件不挑 Tailwind 色号），数字用正文字体 tabular（mono 只给分支/路径），绿只经 `--reclaim` 表「可回收」；行界靠 1px 行线，**不画行背景条、不做药丸标签、UI 不自我解释**——都是生成式界面指纹，删过别加回来。侧栏图标 2026-10-21 重开 U15：**只用一套 Lucide、单色随行文字，未知分组回落 `Boxes`**，别混库、别上彩色。改动配色先跑 `node scripts/contrast.mjs`；UI 改动用无头浏览器对 dist 产物截图自验。hover 提示一律走 `Hint`（`components/Hint.vue`：reka Tooltip + asChild 触发器，**不插 DOM**），**别用原生 `title`**——那条延迟约 1 秒且样式跟系统走。`Hint` 没文案就不挂实例（两百多行的账本付不起），所以 `v-if` 要挂在 `Hint` 上而不是插槽里的元素上——asChild 的插槽为空会没有触发器。提示文案只写**判据**（阈值、口径），不复读行里已有的数字。延迟**统一在 `App.vue` 的 `TooltipProvider`**（500ms、`skip-delay-duration=0`——归零才有「每个 hover 都等满」，reka 默认 300 会让相邻触发器秒开），别在单个 `Hint` 上另设。
 - **不留模块级 `#![allow(dead_code)]`**。它连整棵子树的死代码警告一起咽（`ssh.rs::_unused` 曾在里面躺几个月，clippy 对整棵 `scan/` 瞎）。要留一个暂时没有调用者的项，就在**那一项**上加 `#[allow(dead_code)]` 并写清为什么（`platform.rs` 的 `WIN_LOCAL` / `WIN_ROAMING` 是范例）。
 - **只在测试里用的辅助一律 `#[cfg(test)]`**，别用 `allow(dead_code)` 兜（`ToolchainScanner::on` 是范例）。
 - 删一个函数后记得看它的 `use`：`cargo clippy --all-targets` 会报出失效的 import，但只在**重新编译**那个 crate 时才报。

@@ -774,6 +774,7 @@ Host gamma
                     "git@github.com:x/y.git".into(),
                 )])),
                 cleanable: true,
+                artifact_entries: vec![],
                 reclaimable: Some(1_000_000_000),
             }],
             notes: Some(vec!["提示：测试".into()]),
@@ -860,17 +861,169 @@ Host gamma
         // 读得到（版本一致）
         assert!(cache::load(&dir).is_some());
 
-        // 手工把版本改成旧值，应读不到
         let p = cache::cache_path(&dir);
-        let raw = std::fs::read_to_string(&p).unwrap();
-        let bumped = raw.replace(
-            &format!("\"schema\":{}", cache::SCHEMA_VERSION),
-            "\"schema\":0",
-        );
-        std::fs::write(&p, bumped).unwrap();
-        assert!(cache::load(&dir).is_none(), "schema 不匹配时必须丢弃缓存");
+        let mut old: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        // 17 仍是截断文本契约，不能用默认空数组冒充完整产物列表。
+        old["groups"][0]["items"][0]["metrics"]["artifacts"] =
+            serde_json::json!({"t": "b", "v": 4096});
+        old["groups"][0]["items"][0]["detail"]["产物明细"] = "target · 4 KB".into();
+        for schema in [0, 17] {
+            old["schema"] = schema.into();
+            std::fs::write(&p, serde_json::to_string(&old).unwrap()).unwrap();
+            assert!(cache::load(&dir).is_none(), "旧 schema {schema} 必须丢弃");
+        }
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn artifact_entries_json_and_cache_round_trip_preserves_paths() {
+        let dir = temp_dir("artifact-path-roundtrip");
+        // 换行在 Windows 文件名中不合法；只验证内存与缓存契约，不创建这些目录。
+        let paths = [
+            "with space/node_modules",
+            "中文/target",
+            "pkg · app/dist",
+            r"packages\app\target",
+            "line\nbreak/node_modules",
+        ];
+        let entries: Vec<_> = paths.iter().enumerate().map(|(i, path)| {
+            serde_json::json!({"relative_path": path, "size_bytes": 1001 + i as u64})
+        }).collect();
+        let mut json = serde_json::to_value(sample_group()).unwrap();
+        json["items"][0]["artifact_entries"] = serde_json::json!(entries);
+        json["items"][0]["metrics"]["artifacts"] = serde_json::json!({"t": "b", "v": 5015});
+        let group: AssetGroup =
+            serde_json::from_str(&serde_json::to_string(&json).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&group).unwrap(),
+            json,
+            "JSON 路径与原始字节必须无损"
+        );
+        assert_frontend_contract(std::slice::from_ref(&group));
+        cache::save(&dir, &[group]).unwrap();
+        let got = cache::load(&dir).unwrap();
+        assert_eq!(serde_json::to_value(&got.groups[0]).unwrap(), json);
+        assert_frontend_contract(&got.groups);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn artifact_entries_empty_field_is_optional() {
+        let dir = temp_dir("artifact-empty");
+        let group = sample_group();
+        let mut json = serde_json::to_value(&group).unwrap();
+        assert!(json["items"][0].get("artifact_entries").is_none());
+        let missing: AssetGroup = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&missing).unwrap(), json);
+        json["items"][0]["artifact_entries"] = serde_json::json!([]);
+        let explicit: AssetGroup = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            serde_json::to_value(&explicit).unwrap(),
+            serde_json::to_value(&group).unwrap()
+        );
+        cache::save(&dir, &[explicit]).unwrap();
+        let got = cache::load(&dir).unwrap();
+        assert!(
+            serde_json::to_value(&got.groups[0]).unwrap()["items"][0]
+                .get("artifact_entries")
+                .is_none()
+        );
+        assert_frontend_contract(&got.groups);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn changed_extra_roots_invalidate_only_cached_repos_without_auto_scan() {
+        let dir = temp_dir("cache-root-change");
+        let root = dir.join("code");
+        std::fs::create_dir(&root).unwrap();
+        let mut other = sample_group();
+        other.id = "toolchain".into();
+        cache::save(&dir, &[sample_group(), other]).unwrap();
+        let original = cache::load(&dir).unwrap();
+        crate::roots::add(&dir, &root).unwrap();
+        let changed = cache::load(&dir).unwrap();
+        assert_eq!(cache::decide_boot(Some(&dir)), cache::Boot::UseCache);
+        assert!(changed.groups[0].items.is_empty());
+        assert!(changed.groups[0].error.is_some());
+        assert!(!changed.groups[0].supports_clean);
+        assert_eq!(changed.group_saved_at, original.group_saved_at);
+        assert_eq!(
+            serde_json::to_value(&changed.groups[1]).unwrap(),
+            serde_json::to_value(&original.groups[1]).unwrap()
+        );
+        cache::save_with_times(
+            &dir,
+            &original.groups,
+            &original.group_saved_at,
+            &crate::roots::load_extra(&dir).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cache::load(&dir).unwrap().groups[0].items.len(), 1);
+        crate::roots::remove(&dir, &crate::roots::load_extra(&dir).unwrap()[0]).unwrap();
+        assert!(cache::load(&dir).unwrap().groups[0].items.is_empty());
+        assert_eq!(cache::decide_boot(Some(&dir)), cache::Boot::UseCache);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cache_fingerprint_uses_scanned_roots_not_later_config() {
+        let dir = temp_dir("root-snapshot-race");
+        let scanned = crate::roots::for_scan(&dir).unwrap();
+        let root = dir.join("code");
+        std::fs::create_dir(&root).unwrap();
+        crate::roots::add(&dir, &root).unwrap();
+        cache::save_with_times(&dir, &[sample_group()], &Default::default(), &scanned.extra)
+            .unwrap();
+        let raw = std::fs::read(cache::cache_path(&dir)).unwrap();
+        let saved: cache::CacheEnvelope = serde_json::from_slice(&raw).unwrap();
+        assert!(saved.extra_repo_roots.is_empty());
+        assert!(cache::load(&dir).unwrap().groups[0].items.is_empty());
+        assert_eq!(cache::decide_boot(Some(&dir)), cache::Boot::UseCache);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn corrupt_extra_roots_preserve_unrelated_cached_groups() {
+        let dir = temp_dir("corrupt-roots-cache");
+        let mut other = sample_group();
+        other.id = "toolchain".into();
+        cache::save(&dir, &[sample_group(), other.clone()]).unwrap();
+        std::fs::write(dir.join("repo-roots.json"), b"broken").unwrap();
+        let loaded = cache::load(&dir).unwrap();
+        assert!(loaded.groups[0].items.is_empty());
+        assert!(
+            loaded.groups[0]
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("无法读取")
+        );
+        assert!(!loaded.groups[0].supports_clean);
+        assert_eq!(
+            serde_json::to_value(&loaded.groups[1]).unwrap(),
+            serde_json::to_value(other).unwrap()
+        );
+        assert_eq!(cache::decide_boot(Some(&dir)), cache::Boot::UseCache);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn clearing_scan_cache_keeps_extra_roots() {
+        let dir = temp_dir("keep-root-config");
+        let root = dir.join("code");
+        std::fs::create_dir(&root).unwrap();
+        crate::roots::add(&dir, &root).unwrap();
+        cache::save(&dir, &[sample_group()]).unwrap();
+        cache::remove(&dir);
+        assert!(cache::load(&dir).is_none());
+        assert_eq!(
+            crate::roots::load_extra(&dir).unwrap(),
+            vec![dunce::canonicalize(root).unwrap()]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// remove 之后读不到。
@@ -941,7 +1094,7 @@ Host gamma
         let b = overview_fixture("toolchain", "工具链缓存", 2, 0);
 
         let times = std::collections::BTreeMap::from([("repos".to_string(), 1_000_000)]);
-        cache::save_with_times(&dir, &[a.clone(), b.clone()], &times).unwrap();
+        cache::save_with_times(&dir, &[a.clone(), b.clone()], &times, &[]).unwrap();
         let got = cache::load(&dir).expect("读缓存失败");
         assert_eq!(
             got.group_saved_at.get("repos"),
@@ -1159,6 +1312,190 @@ Host gamma
     // 凭据压根不进入数据流，不是读出来再抹掉。前两条测试守着这条。
     // ========================================================================
 
+    const ADDITIONAL_AI_ROOTS: &[(&str, Option<&str>, &str)] = &[
+        ("DeepSeek Harness", Some(".dsh"), ".dsh"),
+        (
+            "DeepSeek Harness 桌面版",
+            Some("Library/Application Support/@deepseek-ai/dsh-desktop"),
+            "AppData/Roaming/@deepseek-ai/dsh-desktop",
+        ),
+        (
+            "Warp",
+            Some(
+                "Library/Group Containers/2BBY89MBSN.dev.warp/Library/Application Support/dev.warp.Warp-Stable",
+            ),
+            "AppData/Local/warp/Warp/data",
+        ),
+        ("Warp 配置", Some(".warp"), "AppData/Roaming/warp/Warp/data"),
+        ("Warp 本地配置", None, "AppData/Local/warp/Warp/config"),
+        ("OpenClaw", Some(".openclaw"), ".openclaw"),
+        ("ZCode", Some(".zcode"), ".zcode"),
+        (
+            "ZCode 桌面版",
+            Some("Library/Application Support/ZCode"),
+            "AppData/Roaming/ZCode",
+        ),
+        ("灵码", Some(".lingma"), ".lingma"),
+        ("灵码 本地数据", None, "AppData/Local/.lingma"),
+        ("Qwen Agent", None, ".qwen-agent"),
+        ("Qoder CLI", None, ".qoder-cli"),
+        (
+            "Qoder 桌面版",
+            Some("Library/Application Support/com.qoder.app.stable"),
+            "AppData/Roaming/com.qoder.app.stable",
+        ),
+        ("Qoder IDE", None, "AppData/Roaming/Qoder"),
+    ];
+
+    #[test]
+    fn ai_tools_additional_roots_are_platform_scoped_and_read_only() {
+        let home = temp_dir("ai_additional_roots");
+        let content = "private-fixture-content-not-for-output";
+        for (_, mac, win) in ADDITIONAL_AI_ROOTS {
+            for rel in mac.iter().copied().chain(std::iter::once(*win)) {
+                let root = home.join(rel);
+                for name in ["logs", "sessions", "cache"] {
+                    std::fs::create_dir_all(root.join(name)).unwrap();
+                    std::fs::write(root.join(name).join("probe.txt"), content).unwrap();
+                }
+                std::fs::write(root.join("settings.json"), content).unwrap();
+            }
+        }
+        std::fs::create_dir_all(home.join(".unlisted-agent/logs")).unwrap();
+
+        for platform in [Platform::Mac, Platform::Windows] {
+            let expected: HashMap<PathBuf, &str> = ADDITIONAL_AI_ROOTS
+                .iter()
+                .filter_map(|(label, mac, win)| {
+                    let rel = if platform == Platform::Windows {
+                        Some(*win)
+                    } else {
+                        *mac
+                    };
+                    rel.map(|rel| (home.join(rel), *label))
+                })
+                .collect();
+            let g = AiToolsScanner::on(&home, platform).scan();
+            assert_eq!(g.items.len(), expected.len() * 4, "{platform:?}");
+            let roots: HashSet<PathBuf> =
+                g.items.iter().map(|it| PathBuf::from(&it.path)).collect();
+            assert_eq!(roots, expected.keys().cloned().collect(), "{platform:?}");
+            assert_eq!(
+                g.items
+                    .iter()
+                    .map(|it| &it.id)
+                    .collect::<HashSet<_>>()
+                    .len(),
+                g.items.len()
+            );
+            assert!(!serde_json::to_string(&g).unwrap().contains(content));
+
+            for it in &g.items {
+                let root = PathBuf::from(&it.path);
+                assert_eq!(it.group_key.as_deref(), Some(expected[&root]));
+                assert!(!it.cleanable, "{} 只能统计", it.id);
+                assert!(it.reclaimable.is_none(), "{} 不应报可回收量", it.id);
+                assert!(!it.tags.iter().any(|t| t == "可清理"));
+                let (cat, parsed_root) = parse_ai_id(&it.id).unwrap();
+                assert_eq!(parsed_root, root);
+                let child = match cat {
+                    Category::Log => "logs",
+                    Category::Session => "sessions",
+                    Category::Cache => "cache",
+                    Category::Config => "settings.json",
+                    other => panic!("意外类别 {other:?}"),
+                };
+                assert!(
+                    matches!(it.metrics.get("size"), Some(MetricValue::Bytes(b)) if *b == tree_bytes(&root.join(child)))
+                );
+            }
+        }
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn ai_tools_additional_roots_reject_confirmed_cleaning() {
+        let home = temp_dir("ai_additional_clean_reject");
+        for (_, mac, win) in ADDITIONAL_AI_ROOTS {
+            for rel in mac.iter().copied().chain(std::iter::once(*win)) {
+                for name in ["logs", "sessions", "cache"] {
+                    std::fs::create_dir_all(home.join(rel).join(name)).unwrap();
+                }
+            }
+        }
+        for platform in [Platform::Mac, Platform::Windows] {
+            let scanner = AiToolsScanner::on(&home, platform);
+            for (_, mac, win) in ADDITIONAL_AI_ROOTS {
+                let rel = if platform == Platform::Windows {
+                    Some(*win)
+                } else {
+                    *mac
+                };
+                let Some(rel) = rel else { continue };
+                let root = home.join(rel);
+                let ids: Vec<_> = [Category::Log, Category::Session, Category::Cache]
+                    .into_iter()
+                    .map(|cat| ai_id(&root, cat))
+                    .collect();
+                let result = scanner.clean_ai(&CleanPlan {
+                    group_id: "ai_tools".into(),
+                    item_ids: ids.clone(),
+                    confirmed: true,
+                    scope: CleanScope::Repo,
+                    artifact_targets: None,
+                });
+                assert!(result.succeeded.is_empty());
+                assert_eq!(result.freed_bytes, 0);
+                assert_eq!(result.failed.len(), ids.len());
+                for (failure, id) in result.failed.iter().zip(&ids) {
+                    assert_eq!(&failure.id, id);
+                    assert_eq!(failure.reason, "该工具目录仅统计，不开放清理");
+                }
+                for name in ["logs", "sessions", "cache"] {
+                    assert!(root.join(name).is_dir());
+                }
+            }
+        }
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn ai_tools_additional_roots_require_existing_directories() {
+        let home = temp_dir("ai_additional_missing");
+        for platform in [Platform::Mac, Platform::Windows] {
+            assert!(AiToolsScanner::on(&home, platform).scan().items.is_empty());
+        }
+        for (_, mac, win) in ADDITIONAL_AI_ROOTS {
+            for rel in mac.iter().copied().chain(std::iter::once(*win)) {
+                let root = home.join(rel);
+                std::fs::create_dir_all(root.parent().unwrap()).unwrap();
+                std::fs::write(root, "not a directory").unwrap();
+            }
+        }
+        for platform in [Platform::Mac, Platform::Windows] {
+            let scanner = AiToolsScanner::on(&home, platform);
+            assert!(scanner.scan().items.is_empty());
+            for (_, mac, win) in ADDITIONAL_AI_ROOTS {
+                let rel = if platform == Platform::Windows {
+                    Some(*win)
+                } else {
+                    *mac
+                };
+                let Some(rel) = rel else { continue };
+                let result = scanner.clean_ai(&CleanPlan {
+                    group_id: "ai_tools".into(),
+                    item_ids: vec![ai_id(&home.join(rel), Category::Log)],
+                    confirmed: true,
+                    scope: CleanScope::Repo,
+                    artifact_targets: None,
+                });
+                assert_eq!(result.failed.len(), 1);
+                assert_eq!(result.failed[0].reason, "不在 AI 工具扫描白名单内");
+            }
+        }
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     /// 分类器是纯函数，用 fixture 全覆盖。
     ///
     /// 判错方向的代价不对称：把配置判成缓存会误删凭据，把缓存判成未知只是少显示
@@ -1254,7 +1591,9 @@ Host gamma
     /// **容差是给「被测数据是活的」，不是给块对齐的。** 原生遍历没有取整误差，
     /// 而这个测试扫的是用户正在用的目录（日志在写、缓存在清）。先量各类别、
     /// 再量根目录，中间隔了几百毫秒——缓存被清掉一点，根目录就会偏小。
-    /// 实测这条在整机忙碌时偶发假红，就是被这个抖动量绊的。
+    /// 实测这条在整机忙碌时偶发假红，就是被这个抖动量绊的（Windows 实机上 `.workbuddy`
+    /// 8 GB、日志一直在写，撞过 8.5 GB 报值 vs 8.2 GB 实测，差 3.7%）。所以容差给了
+    /// 5% + 16 MB：够吞掉活跃日志目录的一次轮转，远够不着「真重复计算」那种成倍差距。
     ///
     /// 所以这里的定位是**粗筛**：真出现重复计算会差出成倍的体量（2x），
     /// 2% 的容差拦不住它。逐字节的精确性由 `dirsize_matches_independent_block_sum`
@@ -1277,7 +1616,11 @@ Host gamma
 
         for (root, reported) in by_root {
             let actual = tree_bytes(Path::new(root));
-            let slack = actual / 50 + 4 * 1024 * 1024;
+            // 容差按「这个目录有多活跃」给，不是按块对齐给：日志类目录可以一边被扫
+            // 一边被写、还会在扫完之后轮转变小，实测 8 GB 的 `.workbuddy` 撞过 300 MB
+            // 偏差（≈3.7%）。重测一遍基准救不了——那时目录是真的小了，不是量抖了。
+            // 这条的定位是**粗筛**：真重复计算会差出成倍体量，5% 拦不住也不该拦。
+            let slack = actual / 20 + 16 * 1024 * 1024;
             assert!(
                 reported <= actual + slack,
                 "{} 各类别之和 {} 超过实测 {}（容差 {}），存在重复计算",
@@ -1585,11 +1928,23 @@ Host gamma
         assert_eq!(g.error, None, "这是配置状态不是扫描失败");
     }
 
-    /// 调用方给的根目录真的交到了 RepoScanner 手上。
-    ///
-    /// 根目录不再可配置后，这条守的是**注入能力本身**：`scanners_with_roots` 是
-    /// 唯一能在不依赖本机真实仓库的前提下验证「roots 传对了吗」的入口，
-    /// 顺带钉住空 roots 不 panic。别因为配置删了就把它一起删。
+    #[test]
+    fn repo_scan_deduplicates_overlapping_roots() {
+        let dir = temp_dir("overlapping-roots");
+        let child = dir.join("code");
+        std::fs::create_dir_all(child.join("repo-a/.git")).unwrap();
+        std::fs::create_dir_all(child.join("repo-b/.git")).unwrap();
+        let baseline = RepoScanner::new(vec![child.clone()]).scan();
+        let overlap = RepoScanner::new(vec![dir.clone(), child.clone(), child]).scan();
+        let mut ids: Vec<_> = overlap.items.iter().map(|i| &i.id).collect();
+        assert_eq!(ids.len(), 2);
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(overlap.summary, baseline.summary);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn scanners_with_roots_scans_only_the_given_roots() {
         let root = temp_dir("config-roots");
@@ -3507,6 +3862,48 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                 for k in it.metrics.keys() {
                     assert!(!k.is_empty(), "条目 {} 有空指标键", it.id);
                 }
+                let mut artifact_paths = HashSet::new();
+                let mut artifact_bytes = 0u64;
+                for entry in &it.artifact_entries {
+                    let path = &entry.relative_path;
+                    // 两侧路径语法都检查，不能让宿主平台决定契约覆盖面。
+                    let drive_prefix = path.as_bytes().get(1) == Some(&b':')
+                        && path.as_bytes()[0].is_ascii_alphabetic();
+                    assert!(
+                        !path.is_empty() && !path.starts_with(['/', '\\']) && !drive_prefix,
+                        "{} 的产物路径必须非空且相对：{path:?}",
+                        it.id
+                    );
+                    assert!(
+                        !path.split(['/', '\\']).any(|part| part == ".."),
+                        "{} 的产物路径包含父跳转：{path:?}",
+                        it.id
+                    );
+                    assert!(
+                        artifact_paths.insert(path),
+                        "{} 的产物路径重复：{path:?}",
+                        it.id
+                    );
+                    artifact_bytes = artifact_bytes
+                        .checked_add(entry.size_bytes)
+                        .expect("产物字节合计溢出");
+                }
+                match it.metrics.get("artifacts") {
+                    Some(MetricValue::Bytes(bytes)) => {
+                        assert!(
+                            !it.artifact_entries.is_empty(),
+                            "{} 有产物指标却缺完整列表",
+                            it.id
+                        );
+                        assert_eq!(artifact_bytes, *bytes, "{} 产物明细与指标不一致", it.id);
+                    }
+                    Some(_) => panic!("{} 的 artifacts 指标不是字节", it.id),
+                    None => assert!(
+                        it.artifact_entries.is_empty(),
+                        "{} 有产物列表却缺指标",
+                        it.id
+                    ),
+                }
                 // 可回收量必须标了 cleanable，且不能超过自身体积
                 if let Some(r) = it.reclaimable {
                     assert!(it.cleanable, "{} 有回收量却未标 cleanable", it.id);
@@ -3525,6 +3922,72 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                 }
             }
         }
+    }
+
+    #[test]
+    fn artifact_entries_contract_rejects_invalid_lists() {
+        let mut valid = serde_json::to_value(sample_group()).unwrap();
+        valid["items"][0]["artifact_entries"] =
+            serde_json::json!([{"relative_path": "target", "size_bytes": 4096}]);
+        valid["items"][0]["metrics"]["artifacts"] = serde_json::json!({"t": "b", "v": 4096});
+        let group: AssetGroup = serde_json::from_value(valid.clone()).unwrap();
+        assert_frontend_contract(&[group]);
+        let rejects = |json: serde_json::Value| {
+            let group: AssetGroup = serde_json::from_value(json).unwrap();
+            assert!(
+                std::panic::catch_unwind(|| assert_frontend_contract(&[group])).is_err(),
+                "坏产物契约未被拒绝"
+            );
+        };
+        for path in [
+            "",
+            "/target",
+            r"\target",
+            r"C:\target",
+            "C:/target",
+            "C:target",
+            r"\\server\share\target",
+            "../target",
+            "pkg/../target",
+            r"pkg\..\target",
+        ] {
+            let mut bad = valid.clone();
+            bad["items"][0]["artifact_entries"][0]["relative_path"] = path.into();
+            rejects(bad);
+        }
+        let mut duplicate = valid.clone();
+        duplicate["items"][0]["artifact_entries"]
+            .as_array_mut()
+            .unwrap()
+            .push(valid["items"][0]["artifact_entries"][0].clone());
+        duplicate["items"][0]["metrics"]["artifacts"]["v"] = 8192.into();
+        rejects(duplicate);
+        let mut mismatched = valid.clone();
+        mismatched["items"][0]["metrics"]["artifacts"]["v"] = 4097.into();
+        rejects(mismatched);
+        let mut missing = valid.clone();
+        missing["items"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("artifact_entries");
+        rejects(missing);
+        let mut empty = valid.clone();
+        empty["items"][0]["artifact_entries"] = serde_json::json!([]);
+        rejects(empty.clone());
+        empty["items"][0]["metrics"]["artifacts"]["v"] = 0.into();
+        rejects(empty);
+        let mut no_metric = valid.clone();
+        no_metric["items"][0]["metrics"]
+            .as_object_mut()
+            .unwrap()
+            .remove("artifacts");
+        rejects(no_metric);
+        let mut wrong_type = valid.clone();
+        wrong_type["items"][0]["metrics"]["artifacts"]["t"] = "i".into();
+        rejects(wrong_type);
+        valid["items"][0]["artifact_entries"][0]["size_bytes"] = 0.into();
+        valid["items"][0]["metrics"]["artifacts"]["v"] = 0.into();
+        assert_frontend_contract(&[serde_json::from_value(valid).unwrap()]);
     }
 
     /// 冒烟：每个 Scanner 对着空 home 都能给出形状合法的分组，不 panic。
@@ -3612,6 +4075,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                 "npm cache clean --force".into(),
             )])),
             cleanable: true,
+            artifact_entries: vec![],
             reclaimable: Some(1_500_000_000),
         });
 
@@ -3659,6 +4123,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                     metrics: HashMap::from([("size".into(), MetricValue::Bytes(size))]),
                     detail: None,
                     cleanable: reclaim > 0,
+                    artifact_entries: vec![],
                     reclaimable: (reclaim > 0).then_some(reclaim),
                 },
                 // 没标 cleanable 的回收量不计入总览——前端契约也守着这条
@@ -3671,6 +4136,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                     metrics: HashMap::from([("size".into(), MetricValue::Bytes(0))]),
                     detail: None,
                     cleanable: false,
+                    artifact_entries: vec![],
                     reclaimable: Some(999),
                 },
             ],
@@ -4813,51 +5279,72 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// 产物明细进 detail（D14 / S4）：每个产物目录一行「相对路径 · 体积」，
-    /// 体积降序；聚合键「构建产物」保持原样（清理确认弹窗读它）。明细与总账
-    /// 同源（同一次遍历的 noting 钩子），两边必须对得上。
+    /// 完整列表不能因展示上限丢目录；体积用独立遍历作基准，不解析格式化文本。
     #[test]
-    fn repos_artifact_detail_lists_per_dir_lines() {
-        let root = temp_dir("repos-artifact-detail");
-        let repo = root.join("demo");
+    fn repos_artifact_entries_are_complete_sorted_and_exact() {
+        let root = temp_dir("repos-artifact-entries");
+        let repo = root.join("repo-a");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::write(repo.join("package.json"), "{}").unwrap();
         std::fs::write(repo.join("Cargo.toml"), "[package]").unwrap();
-        std::fs::create_dir_all(repo.join("node_modules")).unwrap();
-        std::fs::write(repo.join("node_modules/a.js"), vec![0u8; 4096]).unwrap();
-        std::fs::create_dir_all(repo.join("target")).unwrap();
-        std::fs::write(repo.join("target/out.bin"), vec![0u8; 16384]).unwrap();
-
-        let g = RepoScanner::new(vec![root.clone()]).scan();
-        let item = g
-            .items
-            .iter()
-            .find(|i| i.path == repo.display().to_string())
-            .expect("应识别出 demo 仓库");
-        let d = item.detail.as_ref().expect("detail 应存在");
-
-        assert!(
-            d["构建产物"].contains("2 个目录"),
-            "聚合行保持原样：{}",
-            d["构建产物"]
-        );
-        let lines: Vec<&str> = d["产物明细"].lines().collect();
-        assert_eq!(lines.len(), 2, "两个产物目录两行：{:?}", lines);
-        assert_eq!(
-            lines[0],
-            format!("target · {}", human_bytes(16384)),
-            "体积降序，大的在前"
-        );
-        assert_eq!(lines[1], format!("node_modules · {}", human_bytes(4096)));
-
-        match item.metrics.get("artifacts") {
-            Some(MetricValue::Bytes(b)) => assert_eq!(
-                *b,
-                tree_bytes(&repo.join("node_modules")) + tree_bytes(&repo.join("target")),
-                "产物总账 = 两个产物目录各自体积之和（同一次遍历的口径）"
-            ),
-            other => panic!("artifacts 指标缺失或类型不对：{:?}", other),
+        let mut paths = vec![
+            (PathBuf::from("node_modules"), 4096),
+            (PathBuf::from("target"), 16384),
+        ];
+        // 同体积且逆序创建，防止目录遍历顺序冒充稳定排序。
+        for i in (0..13).rev() {
+            let package = repo.join("packages").join(format!("包 {i:02} · app"));
+            std::fs::create_dir_all(&package).unwrap();
+            std::fs::write(package.join("package.json"), "{}").unwrap();
+            paths.push((
+                package.strip_prefix(&repo).unwrap().join("node_modules"),
+                8192,
+            ));
         }
+        let mut expected = Vec::new();
+        for (rel, bytes) in paths {
+            let path = repo.join(&rel);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("out.bin"), vec![1u8; bytes]).unwrap();
+            expected.push((rel.to_string_lossy().into_owned(), tree_bytes(&path)));
+        }
+        expected.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        assert!(expected.windows(2).any(|pair| pair[0].1 == pair[1].1));
+        let expected_json = serde_json::Value::Array(
+            expected
+                .iter()
+                .map(
+                    |(path, bytes)| serde_json::json!({"relative_path": path, "size_bytes": bytes}),
+                )
+                .collect(),
+        );
+
+        let scanner = RepoScanner::new(vec![root.clone()]);
+        for _ in 0..2 {
+            let g = scanner.scan();
+            assert_eq!(g.items.len(), 1);
+            let item = &g.items[0];
+            assert_eq!(item.path, repo.display().to_string());
+            let json = serde_json::to_value(item).unwrap();
+            assert_eq!(
+                json["artifact_entries"], expected_json,
+                "全部 15 个目录与原始字节都应保留"
+            );
+            let d = item.detail.as_ref().expect("detail 应存在");
+            assert!(d["构建产物"].contains("15 个目录"));
+            assert!(d["构建产物"].contains("node_modules×14"));
+            assert!(d["构建产物"].contains("target"));
+            assert!(!d.contains_key("产物明细"), "旧多行文本契约应移除");
+            assert!(item.tags.iter().any(|tag| tag == "有产物"));
+            match item.metrics.get("artifacts") {
+                Some(MetricValue::Bytes(b)) => {
+                    assert_eq!(*b, expected.iter().map(|(_, n)| n).sum::<u64>())
+                }
+                other => panic!("artifacts 指标缺失或类型不对：{other:?}"),
+            }
+            assert_frontend_contract(std::slice::from_ref(&g));
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// 标记门控的代表性样本：同名目录，标记在 → 命中；标记不在 → 不命中。
@@ -4938,6 +5425,15 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let line = detail.get("构建产物").expect("detail 该有构建产物行");
         assert!(line.contains("node_modules"), "line: {line}");
         assert!(!line.contains("dist"), "无标记的 dist 不进账: {line}");
+        assert_eq!(
+            item.artifact_entries,
+            vec![crate::scan::ArtifactEntry {
+                relative_path: "node_modules".into(),
+                size_bytes: tree_bytes(&nm),
+            }]
+        );
+        assert!(!detail.contains_key("产物明细"));
+        assert_frontend_contract(std::slice::from_ref(&g));
 
         std::fs::remove_dir_all(repo.parent().unwrap()).ok();
     }

@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "",
+        "title": "Stacktake",
         "width": 1180,
         "height": 760,
         "minWidth": 880,

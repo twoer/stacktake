@@ -340,6 +340,7 @@ fn distro_item(d: &WslDistro, size: Option<u64>) -> Item {
         path: d.base_path.display().to_string(),
         metrics,
         detail: Some(detail),
+        artifact_entries: vec![],
         cleanable: false,
         reclaimable: None,
     }

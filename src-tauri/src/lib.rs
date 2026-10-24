@@ -11,6 +11,10 @@ use scan::{
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_dialog::DialogExt;
+
+#[derive(Default)]
+struct ScanLock(tauri::async_runtime::Mutex<()>);
 
 /// java 与 harmony 两组**暂时隐藏**（H14，2026-10-20 用户拍板）：不是「没装上」，
 /// 是「装了也不进侧栏」。`dev_env` 的构造与测试原样保留（喂假 home 的用例照跑），
@@ -33,8 +37,7 @@ pub const HIDDEN_GROUPS: &[&str] = &["java", "harmony"];
 /// `with_overview` 还会再排一次（缓存里的旧快照也要按新序显示）。
 /// 总览分组不在这里（它由 `with_overview` 合成，见下）。
 ///
-/// 真实扫描路径走 [`scanners_with_roots`]，根目录固定取 [`roots::default_roots`]——
-/// 这个函数保留给「就用默认根目录」的调用方（`dump.rs`、`scanner_registration_is_pinned`）。
+/// 此入口仅使用默认目录；应用与 dump 将持久化的补充目录交给 [`scanners_with_roots`]。
 ///
 /// **java 与 harmony 也不在这里**：H14 暂时隐藏（[`HIDDEN_GROUPS`]），恢复路径见那份名单的注释。
 pub fn scanners() -> Vec<Box<dyn Scanner>> {
@@ -42,11 +45,6 @@ pub fn scanners() -> Vec<Box<dyn Scanner>> {
 }
 
 /// 同 [`scanners`]，但 Git 仓库的根目录由调用方给。
-///
-/// roots 曾经可配置（设置页增删，落盘 `scan-config.json`），2026-10-19 删掉了，
-/// 函数本身留下：**它是测试与示例唯一能注入假根目录的入口**
-/// （`scanners_with_roots_scans_only_the_given_roots` 靠它钉住「roots 真的传到了
-/// RepoScanner」，且不需要本机真有仓库）。删了它，这条覆盖就没了。
 pub fn scanners_with_roots(roots: Vec<PathBuf>) -> Vec<Box<dyn Scanner>> {
     let mut v: Vec<Box<dyn Scanner>> = Vec::new();
 
@@ -182,13 +180,10 @@ struct ScanProgress {
 async fn run_full_scan(app: &AppHandle) -> Result<ScanResult, String> {
     // 闭包里要 own 一个 AppHandle 来 emit；原引用留着，后面写缓存还要用
     let app_for_scan = app.clone();
-    // Git 仓库的根目录固定取默认列表（`~/Documents/Code` 等存在的目录，见 `roots` 模块注释）。
-    // 这里曾经读一份可配置文件（C1：设置页增删根目录），2026-10-19 删掉了——
-    // 现在扫哪些目录由代码说了算，不随任何外部状态变。
-    let roots = roots::default_roots();
+    let roots = roots::for_scan(&data_dir(app)?)?;
     let groups = tauri::async_runtime::spawn_blocking(move || {
         use rayon::prelude::*;
-        let scanners = scanners_with_roots(roots);
+        let scanners = scanners_with_roots(roots.paths);
         let total = scanners.len();
 
         let _ = app_for_scan.emit(
@@ -231,7 +226,7 @@ async fn run_full_scan(app: &AppHandle) -> Result<ScanResult, String> {
     // 返回给前端前再过一遍 `with_overview`。
     let mut saved_at = cache::now_secs();
     if let Some(dir) = data_dir(app).ok()
-        && let Ok(ts) = cache::save(&dir, &groups)
+        && let Ok(ts) = cache::save_with_times(&dir, &groups, &BTreeMap::new(), &roots.extra)
     {
         saved_at = ts;
     }
@@ -288,7 +283,7 @@ async fn remove_group_from_cache(app: &AppHandle, group_id: &str) -> Result<Scan
     if groups.is_empty() {
         return run_full_scan(app).await;
     }
-    let saved_at = cache::save_with_times(&dir, &groups, &group_saved_at)
+    let saved_at = cache::save_with_times(&dir, &groups, &group_saved_at, &snap.extra_repo_roots)
         .unwrap_or_else(|_| cache::now_secs());
     Ok(ScanResult {
         groups: with_overview(groups),
@@ -307,7 +302,15 @@ async fn remove_group_from_cache(app: &AppHandle, group_id: &str) -> Result<Scan
 /// 没采用而删（docs/archive/track-c.md）；这个是用户显式发起的增量重扫，且
 /// 合并在服务端做——返回合并 + 重排 + 总览后的完整分组列表，前端整表替换。
 async fn run_group_scan(app: &AppHandle, group_id: &str) -> Result<ScanResult, String> {
-    let Some(scanner) = scanners_with_roots(roots::default_roots())
+    let roots = if group_id == "repos" {
+        roots::for_scan(&data_dir(app)?)?
+    } else {
+        roots::ScanRoots {
+            paths: Vec::new(),
+            extra: Vec::new(),
+        }
+    };
+    let Some(scanner) = scanners_with_roots(roots.paths)
         .into_iter()
         .find(|s| s.id() == group_id)
     else {
@@ -358,8 +361,13 @@ async fn run_group_scan(app: &AppHandle, group_id: &str) -> Result<ScanResult, S
     let mut times = snap.group_saved_at;
     times.insert(fresh.id.clone(), cache::now_secs());
     let groups = scan::upsert_group(snap.groups, fresh);
-    let saved_at =
-        cache::save_with_times(&dir, &groups, &times).unwrap_or_else(|_| cache::now_secs());
+    let extra = if group_id == "repos" {
+        roots.extra
+    } else {
+        snap.extra_repo_roots
+    };
+    let saved_at = cache::save_with_times(&dir, &groups, &times, &extra)
+        .map_err(|e| format!("无法保存扫描结果：{e}"))?;
 
     Ok(ScanResult {
         groups: with_overview(groups),
@@ -371,13 +379,22 @@ async fn run_group_scan(app: &AppHandle, group_id: &str) -> Result<ScanResult, S
 /// 单组重扫。典型入口：清理完成后的自动刷新（只刷被清理的分组）与组视图
 /// 工具栏的「重扫本组」。执行必须人显式发起——硬约束 1 只禁「启动时自动扫描」。
 #[tauri::command]
-async fn rescan_group(app: AppHandle, group_id: String) -> Result<ScanResult, String> {
+async fn rescan_group(
+    app: AppHandle,
+    group_id: String,
+    lock: tauri::State<'_, ScanLock>,
+) -> Result<ScanResult, String> {
+    let _guard = lock.0.lock().await;
     run_group_scan(&app, &group_id).await
 }
 
 /// 启动：有缓存用缓存，没缓存才扫。
 #[tauri::command]
-async fn bootstrap(app: AppHandle) -> Result<BootPayload, String> {
+async fn bootstrap(
+    app: AppHandle,
+    lock: tauri::State<'_, ScanLock>,
+) -> Result<BootPayload, String> {
+    let _guard = lock.0.lock().await;
     let dir = data_dir(&app).ok();
 
     // 先直接读一次缓存。读到了就用，没有才扫。
@@ -409,8 +426,88 @@ async fn bootstrap(app: AppHandle) -> Result<BootPayload, String> {
 /// H1 删掉了与它逐字相同的 `scan_all`（两个命令体都是 `run_full_scan(&app).await`，
 /// 而前端只调 `rescan_now`）。别再加回来——重复的 IPC 面只是多一个可被 webview 调的入口。
 #[tauri::command]
-async fn rescan_now(app: AppHandle) -> Result<ScanResult, String> {
+async fn rescan_now(
+    app: AppHandle,
+    lock: tauri::State<'_, ScanLock>,
+) -> Result<ScanResult, String> {
+    let _guard = lock.0.lock().await;
     run_full_scan(&app).await
+}
+
+#[tauri::command]
+fn get_repo_roots(app: AppHandle) -> Result<roots::RepoRoots, String> {
+    roots::view(&data_dir(&app)?)
+}
+
+#[derive(serde::Serialize)]
+struct RepoRootsError {
+    message: String,
+    snapshot: Option<ScanResult>,
+}
+
+impl From<String> for RepoRootsError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            snapshot: None,
+        }
+    }
+}
+
+fn repo_roots_scan_error(app: &AppHandle, message: String) -> RepoRootsError {
+    let snapshot = data_dir(app)
+        .ok()
+        .and_then(|dir| cache::load(&dir))
+        .map(|snap| ScanResult {
+            groups: with_overview(snap.groups),
+            saved_at: snap.saved_at,
+            group_saved_at: snap.group_saved_at,
+        });
+    RepoRootsError { message, snapshot }
+}
+
+#[tauri::command]
+async fn add_repo_root(
+    app: AppHandle,
+    lock: tauri::State<'_, ScanLock>,
+) -> Result<Option<ScanResult>, RepoRootsError> {
+    let _guard = lock.0.lock().await;
+    let mut dialog = app.dialog().file().set_title("选择 Git 仓库所在的目录");
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    let selected = tauri::async_runtime::spawn_blocking(move || dialog.blocking_pick_folder())
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let path = selected
+        .into_path()
+        .map_err(|e| format!("无法使用所选目录：{e}"))?;
+    roots::add(&data_dir(&app)?, &path)?;
+    run_group_scan(&app, "repos").await.map(Some).map_err(|e| {
+        repo_roots_scan_error(
+            &app,
+            format!("目录已保存，但仓库刷新失败：{e}；请重扫 Git 仓库"),
+        )
+    })
+}
+
+#[tauri::command]
+async fn remove_repo_root(
+    app: AppHandle,
+    path: PathBuf,
+    lock: tauri::State<'_, ScanLock>,
+) -> Result<ScanResult, RepoRootsError> {
+    let _guard = lock.0.lock().await;
+    roots::remove(&data_dir(&app)?, &path)?;
+    run_group_scan(&app, "repos").await.map_err(|e| {
+        repo_roots_scan_error(
+            &app,
+            format!("目录已移除，但仓库刷新失败：{e}；请重扫 Git 仓库"),
+        )
+    })
 }
 
 /// 在系统文件管理器里**揭示**一个路径（访达 / 资源管理器里选中它）。
@@ -438,7 +535,8 @@ async fn reveal_path(path: String) -> Result<(), String> {
 /// 调用者」的三个 command 之一，D2 拍板留它就是因为这个去处——另两个
 /// （`load_cached` 被 bootstrap 包含、`scan_group` 的懒加载前端没采用）已删。
 #[tauri::command]
-async fn clear_cache(app: AppHandle) -> Result<(), String> {
+async fn clear_cache(app: AppHandle, lock: tauri::State<'_, ScanLock>) -> Result<(), String> {
+    let _guard = lock.0.lock().await;
     let dir = data_dir(&app)?;
     cache::remove(&dir);
     Ok(())
@@ -459,15 +557,18 @@ async fn clear_cache(app: AppHandle) -> Result<(), String> {
 /// 执行清理必须人显式发起：门禁只验代码与确认流，测试不碰 `trash::delete`
 /// 的成功路径（真删留给真人）。
 #[tauri::command]
-async fn clean_items(plan: CleanPlan) -> Result<CleanResult, String> {
+async fn clean_items(
+    app: AppHandle,
+    plan: CleanPlan,
+    lock: tauri::State<'_, ScanLock>,
+) -> Result<CleanResult, String> {
+    let _guard = lock.0.lock().await;
     match plan.group_id.as_str() {
         // 复核在各自 Scanner 内部做（repos 的两种范围各有复核，toolchain 查
         // 白名单与是否仍可清理），这里只负责派发——**别把判据收到 command 里**，
         // 收上来就成了「只有这一条路径会复核」的错觉。
         "repos" => {
-            // 与 `run_full_scan` 同一个来源：删掉可配置根目录后，扫描与清理
-            // 复核用的是同一份默认列表，不会出现「扫的时候是 A、复核时是 B」。
-            let scanner = RepoScanner::new(roots::default_roots());
+            let scanner = RepoScanner::new(roots::for_scan(&data_dir(&app)?)?.paths);
             match plan.scope {
                 CleanScope::Repo => Ok(scanner.clean_repo(&plan)),
                 CleanScope::Artifacts => Ok(scanner.clean_artifacts(&plan)),
@@ -496,11 +597,16 @@ async fn clean_items(plan: CleanPlan) -> Result<CleanResult, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(ScanLock::default())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             rescan_now,
             rescan_group,
+            get_repo_roots,
+            add_repo_root,
+            remove_repo_root,
             clear_cache,
             reveal_path,
             clean_items,

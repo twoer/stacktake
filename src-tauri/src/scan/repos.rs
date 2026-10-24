@@ -10,7 +10,8 @@
 
 use crate::scan::dirsize;
 use crate::scan::{
-    AssetGroup, CleanFailure, CleanPlan, CleanResult, Field, Item, MetricValue, Scanner,
+    ArtifactEntry, AssetGroup, CleanFailure, CleanPlan, CleanResult, Field, Item, MetricValue,
+    Scanner,
 };
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -460,13 +461,7 @@ impl Scanner for RepoScanner {
     fn scan(&self) -> AssetGroup {
         let mut notes: Vec<String> = Vec::new();
 
-        // 空根目录守卫：根目录固定取 `roots::default_roots()`，正常不会为空——
-        // 只有 `dirs::home_dir()` 返回 None（拿不到主目录）时才会走到这里。
-        // 原来这里会越界 panic（下面的 `WalkBuilder::new(&self.roots[0])`）——
-        // 明确报出来比崩掉好。
-        //
-        // 这条曾经还有第二个触发路径：用户在设置里清空了全部根目录（C1）。
-        // 可配置的根目录 2026-10-19 删掉了，但守卫留着——home 拿不到仍然会发生。
+        // 主目录不可用且没有补充目录时，不能对空 roots 取下标。
         if self.roots.is_empty() {
             return AssetGroup {
                 id: self.id().into(),
@@ -485,8 +480,13 @@ impl Scanner for RepoScanner {
         for root in &self.roots[1..] {
             walker.add(root);
         }
+        // `hidden(true)` 是「**忽略**隐藏项」——ignore crate 的默认值，不是「含隐藏目录」。
+        // 保持 true 有两个理由：改 false 会把每个 `.git` 内部也走一遍（Windows 上 `.git`
+        // 默认带 HIDDEN 属性，本机全树 13 个隐藏目录全是它），代价换不来东西；而
+        // `.git/worktrees` 下的检出目录本身没有 `.git` 子目录，进不进去都一样找不到。
+        // 已知代价：仓库**目录自己**被设了隐藏属性就扫不到。
         walker
-            .hidden(true) // 含隐藏目录，仓库可能在 .worktrees 之类的地方
+            .hidden(true)
             .git_ignore(true) // 尊重 .gitignore，被忽略的目录不算
             .git_global(false) // 不读全局 gitignore，那是给别人项目用的
             .parents(false)
@@ -516,6 +516,9 @@ impl Scanner for RepoScanner {
         }
 
         let mut repos: Vec<PathBuf> = hits.into_iter().map(|h| h.path).collect();
+        // 补充目录可与默认位置重叠，同一个仓库只能记账一次。
+        repos.sort();
+        repos.dedup();
         repos.sort_by_key(|p| p.components().count());
 
         // ---- 2. 识别嵌套 ----
@@ -724,10 +727,28 @@ impl RepoInfo {
         if let Some(g) = self.git_only {
             detail.insert(".git 体积".into(), human_bytes(g));
         }
+        // 完整保留同一次遍历的结果，展示截断不应丢掉清理选择所需的目录。
+        let mut artifact_entries: Vec<ArtifactEntry> = self
+            .artifacts
+            .iter()
+            .map(|(path, size_bytes)| ArtifactEntry {
+                relative_path: path
+                    .strip_prefix(&self.path)
+                    .expect("noted artifact must be inside its repository")
+                    .to_string_lossy()
+                    .into_owned(),
+                size_bytes: *size_bytes,
+            })
+            .collect();
+        artifact_entries.sort_by(|a, b| {
+            b.size_bytes
+                .cmp(&a.size_bytes)
+                .then_with(|| a.relative_path.cmp(&b.relative_path))
+        });
         // 产物账面：不动 `reclaimable` 语义（那仍是「可整仓删除」的口径），
         // 在 metrics / detail / 标签三处给「构建产物 X GB」。前端据此给
         // 「清理产物」按钮（P2），与整仓清理是两个动作。
-        let artifact_bytes: u64 = self.artifacts.iter().map(|(_, n)| n).sum();
+        let artifact_bytes: u64 = artifact_entries.iter().map(|entry| entry.size_bytes).sum();
         if !self.artifacts.is_empty() {
             metrics.insert("artifacts".into(), MetricValue::Bytes(artifact_bytes));
             tags.push("有产物".to_string());
@@ -759,33 +780,6 @@ impl RepoInfo {
                     kinds
                 ),
             );
-            // 产物明细（D14）：每个产物目录一行「相对路径 · 各自体积」，体积降序。
-            // detail 是 HashMap、序列化序随机，多行收进单键、前端按 \n 分行；
-            // 行数封顶——几十个产物的 monorepo 不该把检查器撑成一屏账本，
-            // 没列进的目录在「构建产物」的总账里仍然都在。
-            let mut rows: Vec<(u64, String)> = self
-                .artifacts
-                .iter()
-                .map(|(p, n)| {
-                    let rel = p
-                        .strip_prefix(&self.path)
-                        .unwrap_or(p)
-                        .to_string_lossy()
-                        .into_owned();
-                    (*n, rel)
-                })
-                .collect();
-            rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            const MAX_DETAIL_ROWS: usize = 12;
-            let mut lines: Vec<String> = rows
-                .iter()
-                .take(MAX_DETAIL_ROWS)
-                .map(|(n, rel)| format!("{rel} · {}", human_bytes(*n)))
-                .collect();
-            if rows.len() > MAX_DETAIL_ROWS {
-                lines.push(format!("…其余 {} 个目录略", rows.len() - MAX_DETAIL_ROWS));
-            }
-            detail.insert("产物明细".into(), lines.join("\n"));
         }
 
         Item {
@@ -797,6 +791,7 @@ impl RepoInfo {
             path: self.path.display().to_string(),
             metrics,
             detail: Some(detail),
+            artifact_entries,
             cleanable,
             reclaimable: if cleanable { self.size } else { None },
         }

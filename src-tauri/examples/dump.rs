@@ -7,7 +7,7 @@
 //! 缓存里存的是扫描器原始快照（不含总览），与 app 同一约定。
 
 use stacktake_lib::cache;
-use stacktake_lib::{scanners, with_overview};
+use stacktake_lib::{roots, scanners_with_roots, with_overview};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -18,14 +18,17 @@ fn main() {
     // 启动决策：没有缓存时才扫。这正是 app 的启动路径。
     eprintln!("启动决策       {:?}", cache::decide_boot(Some(&cache_dir)));
 
-    // 第一次：真扫（慢）。走 `scanners()` 而不是另写一份列表，
-    // 否则新增 Scanner 后这里扫出来的分组和 app 里的对不上。
-    // 并行跑与 app 的 `run_full_scan` 保持一致，否则这里计时的
-    // 「全量扫描耗时」和真实重垦体验是两回事。
+    let config: serde_json::Value =
+        serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+    let app_data = dirs::data_dir()
+        .expect("无法定位应用数据目录")
+        .join(config["identifier"].as_str().unwrap());
+    let scan_roots = roots::for_scan(&app_data).expect("无法读取仓库扫描目录");
+    let scanners = scanners_with_roots(scan_roots.paths);
     let t = Instant::now();
     let groups: Vec<_> = {
         use rayon::prelude::*;
-        scanners().par_iter().map(|s| s.scan()).collect()
+        scanners.par_iter().map(|s| s.scan()).collect()
     };
     let scan_ms = t.elapsed().as_millis();
 
@@ -34,7 +37,9 @@ fn main() {
     }
 
     // 缓存只存扫描器快照；总览是现算的（app 的 bootstrap / run_full_scan 同一约定）
-    cache::save(&cache_dir, &groups).expect("写缓存失败");
+    roots::save_extra(&cache_dir, scan_roots.extra.clone()).expect("写目录配置失败");
+    cache::save_with_times(&cache_dir, &groups, &Default::default(), &scan_roots.extra)
+        .expect("写缓存失败");
     let cache_bytes = std::fs::metadata(cache::cache_path(&cache_dir))
         .map(|m| m.len())
         .unwrap_or(0);

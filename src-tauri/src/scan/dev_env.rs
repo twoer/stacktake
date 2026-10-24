@@ -174,6 +174,7 @@ fn maven_items(root: &Path) -> Vec<Item> {
                 group_key: Some("Maven 仓库".into()),
                 path: r.path.display().to_string(),
                 metrics,
+                artifact_entries: vec![],
                 detail: Some(detail(&[
                     ("0. 路径", r.path.display().to_string()),
                     ("1. 构件组", r.artifacts.to_string()),
@@ -207,6 +208,7 @@ fn maven_items(root: &Path) -> Vec<Item> {
             group_key: Some("Maven 仓库".into()),
             path: root.display().to_string(),
             metrics,
+            artifact_entries: vec![],
             detail: Some(detail(&[
                 ("0. 路径", root.display().to_string()),
                 ("1. 说明", format!("体积未进前 {} 的 groupId", MAVEN_TOP)),
@@ -304,6 +306,7 @@ fn gradle_items(home: &Path) -> Vec<Item> {
                     group_key: Some("Gradle".into()),
                     path: p.display().to_string(),
                     metrics,
+                    artifact_entries: vec![],
                     detail: Some(detail(&[
                         ("0. 路径", p.display().to_string()),
                         (
@@ -358,6 +361,7 @@ fn gradle_items(home: &Path) -> Vec<Item> {
             group_key: Some("Gradle".into()),
             path: p.display().to_string(),
             metrics,
+            artifact_entries: vec![],
             detail: Some(detail(&[
                 ("0. 路径", p.display().to_string()),
                 (
@@ -448,6 +452,7 @@ fn jdk_items() -> Vec<Item> {
                 group_key: Some("JDK".into()),
                 path: p.display().to_string(),
                 metrics,
+                artifact_entries: vec![],
                 detail: Some(detail(&[
                     ("0. 路径", p.display().to_string()),
                     ("1. 目录", dir_name),
@@ -945,6 +950,7 @@ impl Scanner for DevEnvScanner {
                     group_key: None,
                     path: path.display().to_string(),
                     metrics,
+                    artifact_entries: vec![],
                     detail: Some(detail(&[("0. 路径", path.display().to_string())])),
                     cleanable: p.cleanable,
                     reclaimable: if p.cleanable { Some(size) } else { None },

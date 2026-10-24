@@ -305,6 +305,7 @@ fn ollama_item(
         .into_iter()
         .collect(),
         detail: Some(detail),
+        artifact_entries: vec![],
         cleanable: false,
         reclaimable: None,
     })
@@ -397,6 +398,7 @@ fn model_item(dir: &Path, publisher: &str, staging: bool) -> Item {
         path: dir.display().to_string(),
         metrics,
         detail: Some(detail),
+        artifact_entries: vec![],
         cleanable: false,
         reclaimable: None,
     }
@@ -440,6 +442,7 @@ fn huggingface_items(hub: &Path) -> Vec<Item> {
                     .into_iter()
                     .collect(),
                 ),
+                artifact_entries: vec![],
                 cleanable: false,
                 reclaimable: None,
             })

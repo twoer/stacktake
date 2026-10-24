@@ -70,7 +70,20 @@ use std::path::{Path, PathBuf};
 /// （没配 upstream / detached HEAD / git 失败的仓库从前按「无未推送」放行）、
 /// stash 非空开始一票否决——老缓存里这些仓库的 `cleanable` 是按旧口径算的，
 /// 不作废的话账面会宣称一批点下去会被拒的「可回收」。
-pub const SCHEMA_VERSION: u32 = 16;
+///
+/// **第十种：本轮三处账目与范围变更**（16 → 19）。三处都在同一批未提交的改动里，
+/// 中间那些版本号没有对外发布过，所以按理由合写而不是逐个编号——分开写只能编造
+/// 先后，写错的版本号比不写更害人（它会让下一次改动照着错的沿革往下推）：
+/// - **产物明细从截断文本改成完整集合**（`Item::artifact_entries`）：老快照里只有
+///   「构建产物」那一行总账，没有可勾选的目录集合，「清理产物」点开是空的。字段带
+///   `serde(default)`，老缓存**读得出来**——正因如此才必须跳版本：它不报错，只是
+///   静默少一块能力。
+/// - **ai_tools 新增只读根**：`READ_ONLY_SPECS` 补进一批工具目录（含 Windows 实机核对
+///   过的 14 个位置），老快照里没有这些条目，界面只会当它们不存在。
+/// - **补充目录进信封**（`extra_repo_roots`）：信封新增字段且**没有** `serde(default)`，
+///   老缓存反序列化直接失败、等于自动失效——但仍要登记：哪天为了兼容性给它加上
+///   default，这条就是「那时必须换个失效办法」的依据。
+pub const SCHEMA_VERSION: u32 = 19;
 
 const CACHE_FILE: &str = "scan-cache.json";
 
@@ -86,6 +99,7 @@ pub struct CacheEnvelope {
     /// HashMap 键序教训，见 scan::Item）。
     pub group_saved_at: BTreeMap<String, i64>,
     pub groups: Vec<AssetGroup>,
+    pub extra_repo_roots: Vec<PathBuf>,
 }
 
 /// 前端拿到的完整响应。
@@ -97,6 +111,7 @@ pub struct CachedSnapshot {
     pub group_saved_at: BTreeMap<String, i64>,
     /// 距今多久（秒），前端渲染成「3 小时前更新」
     pub age_seconds: i64,
+    pub extra_repo_roots: Vec<PathBuf>,
 }
 
 pub fn cache_path(app_data_dir: &Path) -> PathBuf {
@@ -106,13 +121,41 @@ pub fn cache_path(app_data_dir: &Path) -> PathBuf {
 /// 读缓存。任何异常都当作「没有缓存」——缓存是加速手段，绝不能因为它启动失败。
 pub fn load(app_data_dir: &Path) -> Option<CachedSnapshot> {
     let raw = std::fs::read_to_string(cache_path(app_data_dir)).ok()?;
-    let env: CacheEnvelope = serde_json::from_str(&raw).ok()?;
+    let mut env: CacheEnvelope = serde_json::from_str(&raw).ok()?;
 
     if env.schema != SCHEMA_VERSION {
         return None;
     }
     if env.groups.is_empty() {
         return None;
+    }
+
+    // 配置落盘后扫描可能中断；不展示旧范围的可清理条目，也不因此启动全量扫描。
+    let config_error = match crate::roots::load_extra(app_data_dir) {
+        Ok(extra) if extra != env.extra_repo_roots => {
+            env.extra_repo_roots = extra;
+            Some("扫描目录已更改，请重扫 Git 仓库".to_string())
+        }
+        Ok(_) => None,
+        Err(e) => Some(format!("无法读取 Git 仓库补充目录：{e}")),
+    };
+    if let Some(message) = config_error
+        && let Some(repos) = env.groups.iter_mut().find(|g| g.id == "repos")
+    {
+        repos.items.clear();
+        repos.summary = message.clone();
+        repos.error = Some(message);
+        repos.supports_clean = false;
+        let roots =
+            crate::roots::merged_roots(crate::roots::default_roots(), &env.extra_repo_roots);
+        repos.notes = Some(vec![format!(
+            "扫描根目录：{}",
+            roots
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join("、")
+        )]);
     }
 
     let age = now_secs() - env.saved_at;
@@ -122,6 +165,7 @@ pub fn load(app_data_dir: &Path) -> Option<CachedSnapshot> {
         group_saved_at: env.group_saved_at,
         // 时钟回拨会让 age 变负，钳到 0
         age_seconds: age.max(0),
+        extra_repo_roots: env.extra_repo_roots,
     })
 }
 
@@ -131,7 +175,7 @@ pub fn load(app_data_dir: &Path) -> Option<CachedSnapshot> {
 /// 「数据更新于 X」的基准：前端自己用 `Date.now()` 近似会带上一次扫描的时长偏差
 /// （一次全量扫描几十秒到几分钟），而且缓存写失败时两边就对不上了。
 pub fn save(app_data_dir: &Path, groups: &[AssetGroup]) -> std::io::Result<i64> {
-    save_with_times(app_data_dir, groups, &BTreeMap::new())
+    save_with_times(app_data_dir, groups, &BTreeMap::new(), &[])
 }
 
 /// 同 [`save`]，但各分组的写入时间由调用方给。单组重扫用：只有被重扫的组记
@@ -141,6 +185,7 @@ pub fn save_with_times(
     app_data_dir: &Path,
     groups: &[AssetGroup],
     group_saved_at: &BTreeMap<String, i64>,
+    extra_repo_roots: &[PathBuf],
 ) -> std::io::Result<i64> {
     std::fs::create_dir_all(app_data_dir)?;
 
@@ -157,6 +202,7 @@ pub fn save_with_times(
         saved_at: now,
         group_saved_at: times,
         groups: groups.to_vec(),
+        extra_repo_roots: extra_repo_roots.to_vec(),
     };
     let json = serde_json::to_string(&env)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;

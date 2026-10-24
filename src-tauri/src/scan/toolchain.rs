@@ -1088,6 +1088,7 @@ fn version_item(vm: &VersionManager, dir: &Path, size: u64, mtime: Option<i64>) 
         path: dir.display().to_string(),
         metrics,
         detail: Some(detail),
+        artifact_entries: vec![],
         cleanable: false,
         reclaimable: None,
     }
@@ -1164,6 +1165,7 @@ fn child_item(src: &CacheSource, dir: &Path, size: u64, mtime: Option<i64>) -> I
         path: dir.display().to_string(),
         metrics,
         detail: Some(detail),
+        artifact_entries: vec![],
         cleanable,
         reclaimable: if cleanable { Some(size) } else { None },
     }
@@ -1348,6 +1350,7 @@ fn source_item(src: &CacheSource, path: &Path, size: u64, mtime: Option<i64>) ->
         path: path.display().to_string(),
         metrics,
         detail: Some(detail),
+        artifact_entries: vec![],
         cleanable,
         reclaimable: if cleanable { Some(size) } else { None },
     }

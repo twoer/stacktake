@@ -91,6 +91,42 @@ function checkItem(item, groupId, problems, warnings) {
     }
   }
 
+  const artifacts = item.artifact_entries
+  const artifactTotal = metrics?.artifacts
+  if (artifacts !== undefined && !Array.isArray(artifacts)) {
+    problems.push(`${where}: artifact_entries 不是数组`)
+  }
+  if (artifactTotal !== undefined && (!Array.isArray(artifacts) || artifacts.length === 0)) {
+    problems.push(`${where}: 有产物指标但缺少完整产物集合`)
+  }
+  if (Array.isArray(artifacts) && artifacts.length > 0) {
+    const paths = new Set()
+    let total = 0
+    for (const entry of artifacts) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        problems.push(`${where}: 产物条目不是对象`)
+        continue
+      }
+      const rel = entry.relative_path
+      if (typeof rel !== 'string' || rel.length === 0 ||
+          /^(?:[\\/]|[A-Za-z]:)/.test(rel) || rel.split(/[\\/]/).includes('..')) {
+        problems.push(`${where}: 产物路径必须是仓库内非空相对路径`)
+      } else if (paths.has(rel)) {
+        problems.push(`${where}: 产物路径重复`)
+      } else {
+        paths.add(rel)
+      }
+      if (!Number.isSafeInteger(entry.size_bytes) || entry.size_bytes < 0) {
+        problems.push(`${where}: 产物 size_bytes 不是非负安全整数`)
+      } else {
+        total += entry.size_bytes
+      }
+    }
+    if (!artifactTotal || artifactTotal.t !== 'b' || artifactTotal.v !== total) {
+      problems.push(`${where}: 产物合计与 metrics.artifacts 不一致`)
+    }
+  }
+
   if (item.cleanable !== undefined && typeof item.cleanable !== 'boolean') {
     problems.push(`${where}: cleanable 不是布尔`)
   }
@@ -240,7 +276,39 @@ function selfTest() {
     fields: [{ key: 'size', label: '体积', numeric: true }],
     items: [goodItem],
   }
+  const artifactEntry = { relative_path: 'packages/repo-a/node_modules', size_bytes: 100 }
+  const artifactItem = {
+    ...goodItem,
+    metrics: { ...goodItem.metrics, artifacts: { t: 'b', v: 100 } },
+    artifact_entries: [artifactEntry],
+  }
+  const artifactGroup = { ...good, id: 'repos', items: [artifactItem] }
+  const withArtifactEntries = (entries) => ({
+    ...artifactGroup,
+    items: [{ ...artifactItem, artifact_entries: entries }],
+  })
   const cases = [
+    ['产物集合不是数组', withArtifactEntries({})],
+    ['产物集合为 null', withArtifactEntries(null)],
+    ['有产物指标但缺集合', withArtifactEntries(undefined)],
+    ['有产物指标但集合为空', withArtifactEntries([])],
+    ['产物条目为 null', withArtifactEntries([null])],
+    ['产物相对路径缺失', withArtifactEntries([{ size_bytes: 100 }])],
+    ['产物相对路径为空', withArtifactEntries([{ ...artifactEntry, relative_path: '' }])],
+    ['产物路径是 Unix 绝对路径', withArtifactEntries([{ ...artifactEntry, relative_path: '/tmp/target' }])],
+    ['产物路径是 Windows 绝对路径', withArtifactEntries([{ ...artifactEntry, relative_path: 'C:\\target' }])],
+    ['产物路径是 Windows 盘符相对路径', withArtifactEntries([{ ...artifactEntry, relative_path: 'C:target' }])],
+    ['产物路径跳出仓库', withArtifactEntries([{ ...artifactEntry, relative_path: 'packages/../target' }])],
+    ['产物 Windows 路径跳出仓库', withArtifactEntries([{ ...artifactEntry, relative_path: '..\\target' }])],
+    ['产物路径重复', withArtifactEntries([artifactEntry, { ...artifactEntry, size_bytes: 0 }])],
+    ['产物字节缺失', withArtifactEntries([{ relative_path: 'target' }])],
+    ['产物字节为字符串', withArtifactEntries([{ ...artifactEntry, size_bytes: '100' }])],
+    ['产物字节为负', withArtifactEntries([{ ...artifactEntry, size_bytes: -1 }])],
+    ['产物字节有小数', withArtifactEntries([{ ...artifactEntry, size_bytes: 100.1 }])],
+    ['产物字节为 NaN', withArtifactEntries([{ ...artifactEntry, size_bytes: NaN }])],
+    ['产物字节为无穷', withArtifactEntries([{ ...artifactEntry, size_bytes: Infinity }])],
+    ['产物合计不一致', withArtifactEntries([{ ...artifactEntry, size_bytes: 99 }])],
+    ['产物集合缺合计指标', { ...artifactGroup, items: [{ ...artifactItem, metrics: goodItem.metrics }] }],
     ['字段超过三个', { ...good, fields: [{ key: 'a', label: 'a' }, { key: 'b', label: 'b' }, { key: 'c', label: 'c' }, { key: 'd', label: 'd' }] }],
     ['未知指标标签', { ...good, items: [{ ...goodItem, metrics: { size: { t: 'x', v: 1 } } }] }],
     ['标签与值类型不符', { ...good, items: [{ ...goodItem, metrics: { size: { t: 'b', v: '100' } } }] }],
@@ -255,13 +323,40 @@ function selfTest() {
     ['顶层不是数组', { nope: true }],
   ]
 
+  const fullEntries = Array.from({ length: 14 }, (_, i) => ({
+    relative_path: `packages/repo-${i}/node_modules`,
+    size_bytes: i * 1025,
+  }))
+  fullEntries[0].relative_path = 'packages/空 格 · 分隔\n换行/node_modules'
+  fullEntries[1].relative_path = 'packages\\repo-a\\node_modules'
+  const full = {
+    ...artifactGroup,
+    items: [{
+      ...artifactItem,
+      metrics: { ...goodItem.metrics, artifacts: { t: 'b', v: fullEntries.reduce((n, e) => n + e.size_bytes, 0) } },
+      artifact_entries: fullEntries,
+    }],
+  }
+  const zero = {
+    ...artifactGroup,
+    items: [{ ...artifactItem, metrics: { ...goodItem.metrics, artifacts: { t: 'b', v: 0 } }, artifact_entries: [{ ...artifactEntry, size_bytes: 0 }] }],
+  }
+  const validCases = [
+    ['基础样本', good],
+    ['完整产物集合', artifactGroup],
+    ['空产物集合省略指标', { ...good, items: [{ ...goodItem, artifact_entries: [] }] }],
+    ['零字节产物', zero],
+    ['超过12项与特殊路径往返', JSON.parse(JSON.stringify(full))],
+  ]
   let failed = 0
-  const base = validateSnapshot([good])
-  if (!base.ok) {
-    console.log(`✗ 好样本没通过：${base.problems.join('；')}`)
-    failed++
-  } else {
-    console.log('✓ 好样本通过')
+  for (const [name, data] of validCases) {
+    const result = validateSnapshot([data])
+    if (!result.ok) {
+      console.log(`FAIL ${name}: ${result.problems.join('；')}`)
+      failed++
+    } else {
+      console.log(`PASS ${name}`)
+    }
   }
   for (const [name, data] of cases) {
     const r = validateSnapshot(Array.isArray(data) || data.groups ? data : [data])

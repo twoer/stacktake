@@ -30,6 +30,8 @@ dirs = "5"          # 用户目录（home / config）
 # 前端 fetch 会被静默拦掉。reqwest tauri 内部已带，这里是直接用。
 reqwest = { version = "0.12", features = ["stream", "json"] }
 tokio = { version = "1", features = ["fs", "io-util"] } # 流式写盘（tauri 的 async runtime 就是 tokio）
+tauri-plugin-dialog = "2"
+dunce = "1"
 
 [profile.release]
 codegen-units = 1

@@ -388,6 +388,7 @@ fn build_item(
         path: path.display().to_string(),
         metrics,
         detail: Some(detail),
+        artifact_entries: vec![],
         cleanable: false,
         reclaimable: None,
     }
