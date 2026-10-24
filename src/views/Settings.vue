@@ -1,21 +1,34 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
-import { Code, Download, MessageSquare, RefreshCw, Scale, Trash2 } from "@lucide/vue";
+import { Code, Download, FolderPlus, MessageSquare, RefreshCw, Scale, Trash2 } from "@lucide/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "vue-sonner";
 import { formatAgo } from "@/lib/types";
 import { ISSUES_URL, LICENSE_URL, REPO_URL } from "@/lib/release";
 import { useAssets } from "@/composables/useAssets";
+import { useRepoRoots } from "@/composables/useRepoRoots";
 import { useUpdate } from "@/composables/useUpdate";
 import { Button } from "@/components/ui/button";
 import ByteValue from "@/components/ByteValue.vue";
+import Hint from "@/components/Hint.vue";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import ScanBar from "@/components/ScanBar.vue";
 
 const router = useRouter();
 const { groups, cachedAt, loading, progress, rescan } = useAssets();
+const {
+  roots: repoRoots,
+  pending: repoRootsPending,
+  error: repoRootsError,
+  busy: repoRootsBusy,
+  loadRoots,
+  addRoot,
+  removeRoot,
+} = useRepoRoots();
+onMounted(() => { void loadRoots(); });
+
 // 与侧栏共享同一份状态：App.vue 启动那次静默检查的结果这里直接读到，
 // 不重复发请求。手动点「检查更新」才再查一次。
 const {
@@ -33,6 +46,7 @@ const {
 } = useUpdate();
 
 async function clearCache() {
+  if (loading.value) return;
   try {
     await invoke("clear_cache");
     // 清空内存里的数据，让侧栏和主区立刻反映"无缓存"状态
@@ -99,8 +113,60 @@ const dlPct = computed(() => {
 
     <ScrollArea class="min-h-0 flex-1">
       <div class="mx-auto max-w-[600px] space-y-8 px-4 py-5 text-[12px]">
+        <section aria-labelledby="repo-roots-heading" :aria-busy="!!repoRootsPending">
+          <h2 id="repo-roots-heading" class="text-[13px] font-medium">Git 仓库扫描目录</h2>
+          <p class="mt-1 leading-relaxed text-muted-foreground">
+            补充仓库所在的父目录，添加或移除后只刷新 Git 仓库。
+          </p>
+          <template v-if="repoRoots">
+            <h3 class="mt-3 text-[11px] text-muted-foreground">默认目录 · 只读</h3>
+            <ul class="mt-1">
+              <li v-for="path in repoRoots.default_roots" :key="path" class="border-b border-border/40 py-1.5">
+                <span class="select-text font-mono text-[11px] [overflow-wrap:anywhere]">{{ path }}</span>
+              </li>
+            </ul>
+            <p v-if="!repoRoots.default_roots.length" class="mt-1 text-[11px] text-muted-foreground">未找到默认目录</p>
+            <h3 class="mt-3 text-[11px] text-muted-foreground">补充目录</h3>
+            <ul class="mt-1">
+              <li v-for="root in repoRoots.extra_roots" :key="root.path" class="flex items-start gap-2 border-b border-border/40 py-1.5">
+                <div class="min-w-0 flex-1">
+                  <p class="select-text font-mono text-[11px] leading-6 [overflow-wrap:anywhere]">{{ root.path }}</p>
+                  <p v-if="!root.available" class="text-[11px] text-muted-foreground">目录不可用</p>
+                </div>
+                <Hint text="仅取消扫描，不删除文件">
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    class="shrink-0 text-muted-foreground"
+                    :disabled="repoRootsBusy || dlState === 'downloading'"
+                    :aria-label="`取消扫描 ${root.path}，不删除文件`"
+                    @click="removeRoot(root.path)"
+                  >移除</Button>
+                </Hint>
+              </li>
+            </ul>
+            <p v-if="!repoRoots.extra_roots.length" class="mt-1 text-[11px] text-muted-foreground">尚未补充目录</p>
+          </template>
+          <p v-if="repoRootsPending === 'loading'" role="status" class="mt-3 text-[11px] text-muted-foreground">正在读取扫描目录…</p>
+          <div v-if="repoRootsError" class="mt-3 text-[11px]">
+            <p role="alert" class="whitespace-pre-line text-destructive [overflow-wrap:anywhere]">{{ repoRootsError }}</p>
+            <Button variant="ghost" size="xs" class="mt-1 text-muted-foreground" :disabled="repoRootsBusy" @click="loadRoots">
+              <RefreshCw aria-hidden="true" />
+              重新读取目录
+            </Button>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="xs" :disabled="repoRootsBusy || !repoRoots || dlState === 'downloading'" @click="addRoot">
+              <FolderPlus aria-hidden="true" />
+              补充目录
+            </Button>
+            <span v-if="repoRootsPending === 'adding' || repoRootsPending === 'removing'" role="status" class="text-[11px] text-muted-foreground">正在更新目录…</span>
+          </div>
+          <p class="mt-2 text-[11px] leading-relaxed text-muted-foreground">移除仅取消扫描，不会删除目录或文件。</p>
+        </section>
+
         <!-- ============ 缓存 ============ -->
-        <section>
+        <section class="border-t border-border pt-6">
           <h2 class="text-[13px] font-medium">缓存</h2>
           <p class="mt-1 leading-relaxed text-muted-foreground">
             扫描结果存在本机缓存里，启动直接读（毫秒级），只有首次运行或缓存被清才真扫。
@@ -120,7 +186,7 @@ const dlPct = computed(() => {
               <RefreshCw />
               立即重扫
             </Button>
-            <Button variant="ghost" size="xs" class="text-muted-foreground" @click="clearCache">
+            <Button variant="ghost" size="xs" class="text-muted-foreground" :disabled="scanning" @click="clearCache">
               <Trash2 />
               清空缓存
             </Button>

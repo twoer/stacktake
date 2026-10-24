@@ -34,6 +34,13 @@ void listen<ScanProgress>("scan-progress", (e) => {
   progress.value = e.payload;
 }).catch(() => {});
 
+/** 所有返回完整快照的命令都更新这同一份数据与分组时间。 */
+function applySnapshot(next: ScanResult) {
+  groups.value = next.groups;
+  cachedAt.value = next.saved_at;
+  groupSavedAt.value = next.group_saved_at;
+}
+
 export function useAssets() {
   const route = useRoute();
 
@@ -59,9 +66,7 @@ export function useAssets() {
 
     try {
       const payload = await invoke<BootPayload>("bootstrap");
-      groups.value = payload.groups;
-      cachedAt.value = payload.saved_at;
-      groupSavedAt.value = payload.group_saved_at;
+      applySnapshot(payload);
     } catch (e) {
       error.value = String(e);
     } finally {
@@ -72,15 +77,14 @@ export function useAssets() {
 
   /** 手动重扫：等扫完再返回。成败交回调用方去 toast，这里不碰 UI。 */
   async function rescan(): Promise<{ ok: true } | { ok: false; message: string }> {
+    if (loading.value) return { ok: false, message: "正在扫描或更新目录，请稍后再试" };
     loading.value = true;
     progress.value = null;
     try {
       // saved_at 用后端写进缓存的那个值，不自己算 Date.now()——扫描本身要几十秒，
       // 那样「数据更新于 X」会凭空多算一个扫描时长，重启后又会跳回去
       const next = await invoke<ScanResult>("rescan_now");
-      groups.value = next.groups;
-      cachedAt.value = next.saved_at;
-      groupSavedAt.value = next.group_saved_at;
+      applySnapshot(next);
       return { ok: true };
     } catch (e) {
       return { ok: false, message: String(e) };
@@ -97,13 +101,12 @@ export function useAssets() {
   async function rescanGroup(
     groupId: string,
   ): Promise<{ ok: true } | { ok: false; message: string }> {
+    if (loading.value) return { ok: false, message: "正在扫描或更新目录，请稍后再试" };
     loading.value = true;
     progress.value = null;
     try {
       const next = await invoke<ScanResult>("rescan_group", { groupId });
-      groups.value = next.groups;
-      cachedAt.value = next.saved_at;
-      groupSavedAt.value = next.group_saved_at;
+      applySnapshot(next);
       return { ok: true };
     } catch (e) {
       return { ok: false, message: String(e) };
@@ -122,6 +125,7 @@ export function useAssets() {
     progress,
     activeId,
     current,
+    applySnapshot,
     boot,
     rescan,
     rescanGroup,

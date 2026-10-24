@@ -7,6 +7,11 @@ export interface Field {
   temporal?: boolean
 }
 
+export interface ArtifactEntry {
+  relative_path: string
+  size_bytes: number
+}
+
 export interface Item {
   /**
    * 后端条目 id，**前端只透传、不解析**。形态因组而异：repos 是裸路径、
@@ -32,6 +37,7 @@ export interface Item {
   path: string
   metrics: Record<string, MetricValue>
   detail?: Record<string, string>
+  artifact_entries?: ArtifactEntry[]
   cleanable?: boolean
   reclaimable?: number
 }
@@ -66,6 +72,7 @@ export interface CachedSnapshot {
   /** 各分组各自的写入时间，语义见 ScanResult */
   group_saved_at: Record<string, number>
   age_seconds: number
+  extra_repo_roots: string[]
 }
 
 /** Rust `lib.rs::BootPayload` 的对应结构——启动时的统一响应。 */
@@ -94,6 +101,22 @@ export interface ScanResult {
   group_saved_at: Record<string, number>
 }
 
+/** 补充扫描目录；离线目录仍保留在配置中，允许移除。 */
+export interface RepoRoot {
+  path: string
+  available: boolean
+}
+
+export interface RepoRoots {
+  default_roots: string[]
+  extra_roots: RepoRoot[]
+}
+
+export interface RepoRootsError {
+  message: string
+  snapshot: ScanResult | null
+}
+
 /**
  * Rust `scan::CleanPlan` 的对应结构——清理命令（`clean_items`）的入参（S2 / D1）。
  *
@@ -112,8 +135,8 @@ export interface CleanPlan {
   scope?: "repo" | "artifacts"
   /**
    * 产物清理的子集（`scope: "artifacts"` 时有效）：只清这些**相对仓库根**的产物目录。
-   * 缺省 / undefined = 仓库内全部（= 弹窗里的「全选」）。空数组会被服务端当成
-   * 「什么都没选中」拒掉，不会退化成清全部。
+   * 缺省 / undefined = 仓库内全部；弹窗即使全选也显式传入所选路径。
+   * 空数组会被服务端当成「什么都没选中」拒掉，不会退化成清全部。
    *
    * 前端选过不算数：服务端会把每条重新拼回绝对路径，并过与全量清理完全相同的
    * 复核（在仓库内、白名单、不藏 Git），见 `repos::resolve_artifact_target`。

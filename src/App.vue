@@ -27,8 +27,10 @@ import { useAssets } from "@/composables/useAssets";
 import { useUpdate } from "@/composables/useUpdate";
 import { useTheme } from "@/composables/useTheme";
 import ByteValue from "@/components/ByteValue.vue";
+import Hint from "@/components/Hint.vue";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 // titleBarStyle: Overlay 只对 macOS 生效；Windows 走系统标题栏，webview 从标题栏
 // 下方才开始，侧栏的红绿灯空带在那边是纯空白。口径与 index.html 打 .macos 同帧
@@ -201,126 +203,150 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- 根容器不挂 bg-background：macOS 下窗口透明，这里染色会把侧栏的 vibrancy 盖掉。
-       不透明底交给主区那条 div；Windows 下由 body 的实色底兜住，观感与之前一致。 -->
-  <div class="flex h-screen text-foreground">
-    <!-- 侧栏：Finder/Mail 式通高。顶部留一条标题栏高度的空带给系统红绿灯
-         （titleBarStyle: Overlay，真红绿灯浮在内容上，这里不画假的）-->
-    <aside
-      ref="sidebarEl"
-      class="relative flex w-[208px] shrink-0 flex-col border-r border-border/50 bg-muted/40"
-    >
-      <!-- 标题栏空带留给系统红绿灯（titleBarStyle: Overlay 下真红绿灯浮在内容上，
-           这里不画假的，也不再放产品名——顶栏已有分组名，侧栏不必再标一次）。
-           仅 macOS 渲染：Windows 忽略 titleBarStyle、系统标题栏在 webview 外面，
-           这条空带只是 28px 死空白（真机上整个侧栏内容跟着下移）。 -->
-      <div v-if="isMac" class="h-7 shrink-0" data-tauri-drag-region />
+  <!-- TooltipProvider 只提供上下文、不渲染 DOM（reka 的 Provider 就是个 slot），
+       所以套在根容器外面不改变任何布局。
 
-      <ScrollArea class="min-h-0 flex-1">
-        <!-- pt-4 不是随便填的：首行上缘实测 32px 时距红绿灯只剩 13px，白色选中 pill
-             一贴上去就显得顶到红绿灯了；44px（pt-4）是 Finder/Mail 的口径。 -->
-        <nav class="space-y-px px-1.5 pb-2 pt-4">
-          <button
-            data-side-key="overview"
-            class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            :class="
-              !onSettings && current?.id === 'overview'
-                ? // 深色下 bg-background 比侧栏底和 hover 都暗，选中行会变成最不突出的一行，
-                  // 所以深色改挂 bg-accent，保持「选中 > hover > 侧栏底」的明序（U1 调过的）
-                  'bg-background font-medium text-foreground dark:bg-accent'
-                : 'text-muted-foreground hover:bg-muted/60'
+       delay-duration 500：比原生的约 1 秒短一半。账本行密，扫过就想看到说明，
+       但要长到「手腕划过整列」不会沿途连弹。
+
+       skip-delay-duration 0 是刻意的：reka 默认 300，含义是「关掉一个 tooltip 后
+       300ms 内再 hover 别的触发器就立刻弹」。账本行的标签是紧挨着的，默认行为会
+       让相邻标签秒开——那就不是「每个 hover 都等 500ms」了。归零之后每次悬停都
+       实打实等满，代价是在同一行里挨个看标签要每个都停半秒。 -->
+  <TooltipProvider :delay-duration="500" :skip-delay-duration="0">
+    <!-- 根容器不挂 bg-background：macOS 下窗口透明，这里染色会把侧栏的 vibrancy 盖掉。
+         不透明底交给主区那条 div；Windows 下由 body 的实色底兜住，观感与之前一致。 -->
+    <div class="flex h-screen text-foreground">
+      <!-- 侧栏：Finder/Mail 式通高。顶部留一条标题栏高度的空带给系统红绿灯
+           （titleBarStyle: Overlay，真红绿灯浮在内容上，这里不画假的）-->
+      <aside
+        ref="sidebarEl"
+        class="relative flex w-[208px] shrink-0 flex-col border-r border-border/50 bg-muted/40"
+      >
+        <!-- 标题栏空带留给系统红绿灯（titleBarStyle: Overlay 下真红绿灯浮在内容上，
+             这里不画假的，也不再放产品名——顶栏已有分组名，侧栏不必再标一次）。
+             仅 macOS 渲染：Windows 忽略 titleBarStyle、系统标题栏在 webview 外面，
+             这条空带只是 28px 死空白（真机上整个侧栏内容跟着下移）。 -->
+        <div v-if="isMac" class="h-7 shrink-0" data-tauri-drag-region />
+
+        <ScrollArea class="min-h-0 flex-1">
+          <!-- pt-4 不是随便填的：首行上缘实测 32px 时距红绿灯只剩 13px，白色选中 pill
+               一贴上去就显得顶到红绿灯了；44px（pt-4）是 Finder/Mail 的口径。 -->
+          <nav class="space-y-px px-1.5 pb-2 pt-4">
+            <button
+              data-side-key="overview"
+              class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              :class="
+                !onSettings && current?.id === 'overview'
+                  ? // 深色下 bg-background 比侧栏底和 hover 都暗，选中行会变成最不突出的一行，
+                    // 所以深色改挂 bg-accent，保持「选中 > hover > 侧栏底」的明序（U1 调过的）
+                    'bg-background font-medium text-foreground dark:bg-accent'
+                  : 'text-muted-foreground hover:bg-muted/60'
+              "
+              :aria-current="!onSettings && current?.id === 'overview' ? 'page' : undefined"
+              @click="pick('overview')"
+            >
+              <component :is="sideIcon('overview')" class="size-3.5 shrink-0" />
+              <span class="min-w-0 flex-1 truncate text-[13px]">总览</span>
+              <span class="shrink-0 text-[11px] text-muted-foreground">
+                <ByteValue :bytes="totalSize" animate />
+              </span>
+            </button>
+
+            <div class="px-2 pb-1 pt-3 text-[11px] font-semibold text-muted-foreground">
+              分组
+            </div>
+
+            <!-- 分组名被侧栏宽度截断时，tooltip 给全名。side=right：向侧栏内侧展开，
+                 朝上会压住红绿灯那一条。 -->
+            <Hint
+              v-for="g in sidebarGroups"
+              :key="g.id"
+              :text="g.label"
+              side="right"
+            >
+              <button
+                :data-side-key="g.id"
+                class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                :class="
+                  !onSettings && current?.id === g.id
+                    ? 'bg-background font-medium text-foreground dark:bg-accent'
+                    : 'text-muted-foreground hover:bg-muted/60'
+                "
+                :aria-current="!onSettings && current?.id === g.id ? 'page' : undefined"
+                @click="pick(g.id)"
+              >
+                <component :is="sideIcon(g.id)" class="size-3.5 shrink-0" />
+                <span class="min-w-0 flex-1 truncate text-[13px]">{{ g.label }}</span>
+                <span class="shrink-0 text-[11px] text-muted-foreground">
+                  <ByteValue v-if="groupSize(g) > 0" :bytes="groupSize(g)" animate />
+                  <template v-else>—</template>
+                </span>
+              </button>
+            </Hint>
+          </nav>
+        </ScrollArea>
+
+        <!-- 设置：钉在侧栏底部、不进 ScrollArea——分组多到能滚时也不能跟着滚走。
+             早年挂在状态栏右侧，2026-10-19 按用户要求挪回侧栏：它是「整个应用」的入口，
+             和「数据更新于」这种当前视图的状态同栏，等于每换一个分组就要重新找一遍。
+             选中态与分组行同一套规则（pill + 加粗），切换过来一眼看得出在哪。
+             版本号并入按钮（2026-10-21 用户拍板）：撤掉独立的「有更新」行，
+             有更新时把显示的版本号换成新版本 + 小点，点击仍进设置页——侧栏只做
+             状态展示，下载动作在设置页的「更新」节（一次点击一个职责）。
+             启动那次检查是静默的：断网、没有 release、读不到版本号，这里什么都不显。
+             上方分隔线 2026-10-21 用户拍板去掉（border-t）：设置行与分组之间只靠留白分隔。 -->
+        <div class="px-1.5 py-1.5">
+          <!-- 版本提示挂这里：按钮右侧已经印着 v0.1.7，再补一句「有新版本」只能靠
+               hover。没读到版本号时 Hint 不出实例，按钮也不会变成空 tooltip 的靶子。 -->
+          <Hint
+            :text="
+              updateState === 'available'
+                ? `有新版本 ${latest}，前往设置页下载`
+                : version
+                  ? `当前版本 v${version}`
+                  : undefined
             "
-            :aria-current="!onSettings && current?.id === 'overview' ? 'page' : undefined"
-            @click="pick('overview')"
+            side="right"
           >
-            <component :is="sideIcon('overview')" class="size-3.5 shrink-0" />
-            <span class="min-w-0 flex-1 truncate text-[13px]">总览</span>
-            <span class="shrink-0 text-[11px] text-muted-foreground">
-              <ByteValue :bytes="totalSize" animate />
-            </span>
-          </button>
+            <button
+              data-side-key="settings"
+              class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              :class="
+                onSettings
+                  ? 'bg-background font-medium text-foreground dark:bg-accent'
+                  : 'text-muted-foreground hover:bg-muted/60'
+              "
+              :aria-current="onSettings ? 'page' : undefined"
+              @click="router.push('/settings')"
+            >
+              <component :is="sideIcon('settings')" class="size-3.5 shrink-0" />
+              <span class="min-w-0 flex-1 truncate text-[13px]">设置</span>
+              <template v-if="updateState === 'available'">
+                <span class="size-1.5 shrink-0 rounded-full bg-primary" />
+                <span class="shrink-0 text-[11px] tabular-nums text-primary">{{ latest }}</span>
+              </template>
+              <span v-else-if="version" class="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                v{{ version }}
+              </span>
+            </button>
+          </Hint>
+        </div>
+        <span ref="markerEl" class="side-marker" style="opacity: 0" aria-hidden="true" />
+      </aside>
 
-          <div class="px-2 pb-1 pt-3 text-[11px] font-semibold text-muted-foreground">
-            分组
-          </div>
-
-          <button
-            v-for="g in sidebarGroups"
-            :key="g.id"
-            :data-side-key="g.id"
-            class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            :class="
-              !onSettings && current?.id === g.id
-                ? 'bg-background font-medium text-foreground dark:bg-accent'
-                : 'text-muted-foreground hover:bg-muted/60'
-            "
-            :title="g.label"
-            :aria-current="!onSettings && current?.id === g.id ? 'page' : undefined"
-            @click="pick(g.id)"
-          >
-            <component :is="sideIcon(g.id)" class="size-3.5 shrink-0" />
-            <span class="min-w-0 flex-1 truncate text-[13px]">{{ g.label }}</span>
-            <span class="shrink-0 text-[11px] text-muted-foreground">
-              <ByteValue v-if="groupSize(g) > 0" :bytes="groupSize(g)" animate />
-              <template v-else>—</template>
-            </span>
-          </button>
-        </nav>
-      </ScrollArea>
-
-      <!-- 设置：钉在侧栏底部、不进 ScrollArea——分组多到能滚时也不能跟着滚走。
-           早年挂在状态栏右侧，2026-10-19 按用户要求挪回侧栏：它是「整个应用」的入口，
-           和「数据更新于」这种当前视图的状态同栏，等于每换一个分组就要重新找一遍。
-           选中态与分组行同一套规则（pill + 加粗），切换过来一眼看得出在哪。
-           版本号并入按钮（2026-10-21 用户拍板）：撤掉独立的「有更新」行，
-           有更新时把显示的版本号换成新版本 + 小点，点击仍进设置页——侧栏只做
-           状态展示，下载动作在设置页的「更新」节（一次点击一个职责）。
-           启动那次检查是静默的：断网、没有 release、读不到版本号，这里什么都不显。
-           上方分隔线 2026-10-21 用户拍板去掉（border-t）：设置行与分组之间只靠留白分隔。 -->
-      <div class="px-1.5 py-1.5">
-        <button
-          data-side-key="settings"
-          class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          :class="
-            onSettings
-              ? 'bg-background font-medium text-foreground dark:bg-accent'
-              : 'text-muted-foreground hover:bg-muted/60'
-          "
-          :aria-current="onSettings ? 'page' : undefined"
-          :title="
-            updateState === 'available'
-              ? `有新版本 ${latest}，前往设置页下载`
-              : version
-                ? `当前版本 v${version}`
-                : undefined
-          "
-          @click="router.push('/settings')"
-        >
-          <component :is="sideIcon('settings')" class="size-3.5 shrink-0" />
-          <span class="min-w-0 flex-1 truncate text-[13px]">设置</span>
-          <template v-if="updateState === 'available'">
-            <span class="size-1.5 shrink-0 rounded-full bg-primary" />
-            <span class="shrink-0 text-[11px] tabular-nums text-primary">{{ latest }}</span>
-          </template>
-          <span v-else-if="version" class="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-            v{{ version }}
-          </span>
-        </button>
+      <!-- 主区自己扛不透明底：macOS 透明窗口下，只有侧栏该透出 vibrancy -->
+      <div class="flex min-w-0 flex-1 flex-col bg-background">
+        <main class="min-h-0 flex-1">
+          <router-view />
+        </main>
       </div>
-      <span ref="markerEl" class="side-marker" style="opacity: 0" aria-hidden="true" />
-    </aside>
 
-    <!-- 主区自己扛不透明底：macOS 透明窗口下，只有侧栏该透出 vibrancy -->
-    <div class="flex min-w-0 flex-1 flex-col bg-background">
-      <main class="min-h-0 flex-1">
-        <router-view />
-      </main>
+      <!-- toast 宿主。G1（4a924d7）重写 App.vue 时把这个挂载点丢了，此后所有
+           toast.* 静默 no-op——清理结果、复制路径、重扫、设置四动作全无反馈。
+           theme 必须显式传：vue-sonner 自己不读 .dark class（见 Assets.vue 同款注释）。
+           挂载点由 App.vue 提供，调用方在 views 里，别再把这里删掉。 -->
+      <Toaster :theme="theme === 'dark' ? 'dark' : 'light'" position="top-center" :duration="4000" />
     </div>
-
-    <!-- toast 宿主。G1（4a924d7）重写 App.vue 时把这个挂载点丢了，此后所有
-         toast.* 静默 no-op——清理结果、复制路径、重扫、设置四动作全无反馈。
-         theme 必须显式传：vue-sonner 自己不读 .dark class（见 Assets.vue 同款注释）。
-         挂载点由 App.vue 提供，调用方在 views 里，别再把这里删掉。 -->
-    <Toaster :theme="theme === 'dark' ? 'dark' : 'light'" position="top-center" :duration="4000" />
-  </div>
+  </TooltipProvider>
 </template>
