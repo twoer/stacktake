@@ -27,11 +27,20 @@ const groupSavedAt = ref<Record<string, number>>({});
  * 没有扫描时为 null。
  */
 const progress = ref<ScanProgress | null>(null);
+/**
+ * 本次扫描已完成的分组名（到达序，扫描器并行所以不固定）。事件是瞬时的，
+ * 「哪些组扫完了」要靠这里累计；首扫空态的行账拿它点亮对应的行。
+ * 与 progress 同生共死：扫描开始清空，结束一并归 null。
+ */
+const scanDoneLabels = ref<string[]>([]);
 
 // 模块级注册、随应用生命周期存活：进度事件只在扫描期间来，早注册不会漏掉
 // 开扫那一刻的 done: 0。非 Tauri 环境（浏览器里跑）invoke 会拒，吞掉即可。
 void listen<ScanProgress>("scan-progress", (e) => {
   progress.value = e.payload;
+  if (e.payload.label && !scanDoneLabels.value.includes(e.payload.label)) {
+    scanDoneLabels.value.push(e.payload.label);
+  }
 }).catch(() => {});
 
 /** 所有返回完整快照的命令都更新这同一份数据与分组时间。 */
@@ -72,6 +81,7 @@ export function useAssets() {
     } finally {
       loading.value = false;
       progress.value = null;
+      scanDoneLabels.value = [];
     }
   }
 
@@ -80,6 +90,7 @@ export function useAssets() {
     if (loading.value) return { ok: false, message: "正在扫描或更新目录，请稍后再试" };
     loading.value = true;
     progress.value = null;
+    scanDoneLabels.value = [];
     try {
       // saved_at 用后端写进缓存的那个值，不自己算 Date.now()——扫描本身要几十秒，
       // 那样「数据更新于 X」会凭空多算一个扫描时长，重启后又会跳回去
@@ -91,6 +102,7 @@ export function useAssets() {
     } finally {
       loading.value = false;
       progress.value = null;
+      scanDoneLabels.value = [];
     }
   }
 
@@ -104,6 +116,7 @@ export function useAssets() {
     if (loading.value) return { ok: false, message: "正在扫描或更新目录，请稍后再试" };
     loading.value = true;
     progress.value = null;
+    scanDoneLabels.value = [];
     try {
       const next = await invoke<ScanResult>("rescan_group", { groupId });
       applySnapshot(next);
@@ -113,6 +126,7 @@ export function useAssets() {
     } finally {
       loading.value = false;
       progress.value = null;
+      scanDoneLabels.value = [];
     }
   }
 
@@ -123,6 +137,7 @@ export function useAssets() {
     cachedAt,
     groupSavedAt,
     progress,
+    scanDoneLabels,
     activeId,
     current,
     applySnapshot,

@@ -854,10 +854,13 @@ fn collect_repo(path: &Path, is_nested: bool, nested: &HashSet<PathBuf>) -> Repo
     let remote = git_output(path, &["config", "--get", "remote.origin.url"]).unwrap_or_default();
 
     // stash 探测兼任「这个仓库的 git 还能不能用」的信号：它失败说明 git 检查
-    // 整体不可信——stash 按有处理、推送状态按查不出处理，全部走 fail-closed。
+    // 整体不可信——推送状态按查不出处理（[`Push::Unknown`]，显示判据与删除
+    // 复核两处的一票否决都从它来）。`has_stash` 落回 false 只是不把没核实的
+    // 事当事实展示（「有 stash」标签只挂核实过的）；否决不靠它——Unknown
+    // 已经把整仓清理拦下了，别在这里再「按有处理」造一条假断言。
     let (has_stash, git_ok) = match git_probe(path, &["stash", "list"]) {
         Some((true, out)) => (!out.is_empty(), true),
-        _ => (true, false),
+        _ => (false, false),
     };
 
     // 推送状态核查（三态，见 [`push_state`]）。`@{u}...HEAD` 的 `--left-right

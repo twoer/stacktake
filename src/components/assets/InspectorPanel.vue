@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { ChevronRight, FolderOpen, Trash2 } from "@lucide/vue";
 import type { AssetGroup, Item } from "@/lib/types";
 import { artifactBytes, groupReclaimable, itemSize, reclaimableOf } from "@/lib/types";
-import { artifactRowsOf, canCleanArtifactsItem, canCleanItem, cell, tagHint } from "@/lib/assets";
+import { artifactRowsOf, canCleanArtifactsItem, canCleanItem, cell, isBlockerTag, orderedTags, tagHint } from "@/lib/assets";
 import { isLocalPath, revealLabel } from "@/lib/path";
 import { Button } from "@/components/ui/button";
 import ByteValue from "@/components/ByteValue.vue";
@@ -104,14 +104,15 @@ function detailLabel(key: string): string {
         </Button>
       </div>
 
-      <!-- 标签与表格行同一形态：灰字不是药丸（U15），检查器里也不留一处例外。
+      <!-- 标签与表格行同一形态：小字不是药丸（U15），检查器里也不留一处例外。
            这里用原始 tags（不做多数派抑制）——检查器是细看一行，抑制规则是
-           为「一屏两百行」定的，跟它无关。 -->
+           为「一屏两百行」定的，跟它无关。墨色两档与行内同口径（BLOCKER_TAGS），
+           阻断项同样排最前。 -->
       <p v-if="selectedRow.tags.length" class="mt-2 flex flex-wrap items-baseline gap-x-1.5 text-[11px] text-muted-foreground">
-        <template v-for="(t, ti) in selectedRow.tags" :key="t">
+        <template v-for="(t, ti) in orderedTags(selectedRow.tags)" :key="t">
           <span v-if="ti" aria-hidden="true">·</span>
           <Hint :text="tagHint(t)">
-            <span>{{ t }}</span>
+            <span :class="isBlockerTag(t) ? 'font-medium text-foreground' : ''">{{ t }}</span>
           </Hint>
         </template>
       </p>

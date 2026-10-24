@@ -5047,8 +5047,9 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         std::fs::remove_dir_all(repo.parent().unwrap()).ok();
     }
 
-    /// git 坏掉的仓库（任何 git 调用都失败）：一切按最坏情况算——stash 当有、
-    /// 推送状态按未知，绝不标可清理。这是 fail-closed 的兜底档。
+    /// git 坏掉的仓库（任何 git 调用都失败）：推送状态按未知，绝不标可清理。
+    /// 这是 fail-closed 的兜底档。stash 没核实成——「有 stash」标签只挂核实过
+    /// 的，不把保守假设当事实展示；否决由「推送未核实」承担，不靠 stash 假设。
     #[test]
     fn repos_broken_git_is_never_cleanable() {
         let root = temp_dir("broken-git");
@@ -5070,8 +5071,8 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             item.tags
         );
         assert!(
-            item.tags.iter().any(|t| t == "有 stash"),
-            "stash 状态按未知处理：tags={:?}",
+            !item.tags.iter().any(|t| t == "有 stash"),
+            "stash 没核实成不许挂「有 stash」标签：tags={:?}",
             item.tags
         );
         match item.metrics.get("dirty") {

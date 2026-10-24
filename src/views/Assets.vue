@@ -23,7 +23,14 @@ import {
 import { useAssets } from "@/composables/useAssets";
 import { useRepoRoots } from "@/composables/useRepoRoots";
 import { captureRowTops, playRowFlip } from "@/lib/motion";
-import { canCleanArtifactsItem, canCleanItem, cell, tagHint } from "@/lib/assets";
+import {
+  canCleanArtifactsItem,
+  canCleanItem,
+  cell,
+  isBlockerTag,
+  orderedTags,
+  tagHint,
+} from "@/lib/assets";
 import type { Dimension } from "@/lib/assets";
 import { isLocalPath } from "@/lib/path";
 import { Button } from "@/components/ui/button";
@@ -46,6 +53,7 @@ const {
   error,
   activeId,
   progress,
+  scanDoneLabels,
   cachedAt,
   groupSavedAt,
   rescan,
@@ -713,6 +721,11 @@ function visibleTags(it: Item): string[] {
   });
 }
 
+/** 行内渲染口径：先抑制，再把阻断项提到最前——限宽截断时牺牲的是说明项。 */
+function rowTags(it: Item): string[] {
+  return orderedTags(visibleTags(it));
+}
+
 function sectionSize(rows: { item: Item }[]): number {
   return rows.reduce((s, r) => s + itemSize(r.item), 0);
 }
@@ -909,15 +922,33 @@ async function onRescan() {
         <!-- 首次扫描：此时明确告知在做什么，否则 26 秒白屏会让人以为卡死了 -->
         <!-- 空态左对齐、贴在表头下方那一行上，不居中：居中 + 图标在上 + 灰字是
              「这界面是生成出来的」的第一指纹，也是唯一一个纯靠位置就能露馅的特征。
-             副标题 10px → 11px：它是信息不是装饰，踩到「信息性文字 ≥11px」的纪律。 -->
+             进度做成行账：全部分组在开扫第一拍就按注册序预排行线，扫完一行点亮
+             一行——26 秒里的空页面被「正在写出来的账本」占住，而不是孤零零两行字。
+             行高与行线抄真实表格行（26px / border-border/40）。副标题 10px → 11px：
+             它是信息不是装饰，踩到「信息性文字 ≥11px」的纪律。 -->
         <div v-if="!current && loading && !error" class="px-3 py-6">
-          <LoaderCircle
-            class="size-4 motion-safe:animate-spin motion-reduce:animate-[spin_2.5s_linear_infinite] text-muted-foreground"
-          />
-          <p class="mt-2 text-xs text-foreground">正在首次扫描本机…</p>
-          <p class="mt-1 text-[11px] text-muted-foreground">
-            {{ progress ? `已完成 ${progress.done}/${progress.total} 个分组` : "约 26 秒，之后打开直接读缓存" }}
+          <div class="flex items-center gap-2">
+            <LoaderCircle
+              class="size-4 motion-safe:animate-spin motion-reduce:animate-[spin_2.5s_linear_infinite] text-muted-foreground"
+            />
+            <p class="text-xs text-foreground">正在首次扫描本机…</p>
+          </div>
+          <p v-if="!progress" class="mt-2 text-[11px] text-muted-foreground">
+            约 26 秒，之后打开直接读缓存
           </p>
+          <!-- 完成的组名点亮、待扫的灰着。3/4 这类计数进工具栏按钮了，这里不复读 -->
+          <ul v-else class="mt-3">
+            <li
+              v-for="label in progress.labels"
+              :key="label"
+              class="flex h-[26px] items-center border-t border-border/40 text-xs"
+              :class="
+                scanDoneLabels.includes(label) ? 'text-foreground' : 'text-muted-foreground'
+              "
+            >
+              {{ label }}
+            </li>
+          </ul>
         </div>
 
         <p
@@ -1045,8 +1076,10 @@ async function onRescan() {
                 >
                   <!-- 行背景占比条已删（U15）：238 行按体积归一的灰条连成一道灰阶梯，
                        把表格读成仪表盘热力图；账本的比例语义由数字列与总览「占比」列承担。
-                       名称与状态同一行：状态是 11px 灰字不是药丸——药丸把单行撑成两行、
-                       全列铺满小灰块纹理，是生成式列表 UI 的第一指纹。两段都可截断，
+                       名称与状态同一行：状态是 11px 小字不是药丸——药丸把单行撑成两行、
+                       全列铺满小灰块纹理，是生成式列表 UI 的第一指纹。层级走墨色两档
+                       （阻断项近黑、说明项灰，判据 BLOCKER_TAGS），不做背景条不加色。
+                       两段都可截断，
                        按各自宽度比例分摊挤压，窄窗口下谁都不会把谁顶出去。
                        两段各自的 tooltip 挂在各自那段上，**不挂整行**：行的 tooltip
                        会与段内的 tooltip 嵌套，pointermove 冒泡上去两条一起排队开，
@@ -1061,17 +1094,20 @@ async function onRescan() {
                     <!-- 标签逐个挂提示：hover 哪个解释哪个，比整段一份说明精确。
                          分隔点不在提示范围内（它是标点，不是信息）。 -->
                     <span
-                      v-if="visibleTags(row.item).length"
+                      v-if="rowTags(row.item).length"
                       class="flex max-w-[40%] shrink-0 items-baseline gap-1 overflow-hidden"
                     >
-                      <template v-for="(t, ti) in visibleTags(row.item)" :key="t">
+                      <template v-for="(t, ti) in rowTags(row.item)" :key="t">
                         <span
                           v-if="ti"
                           class="shrink-0 text-[11px] text-muted-foreground"
                           aria-hidden="true"
                         >·</span>
                         <Hint :text="tagHint(t)">
-                          <span class="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">{{ t }}</span>
+                          <span
+                            class="shrink-0 whitespace-nowrap text-[11px]"
+                            :class="isBlockerTag(t) ? 'font-medium text-foreground' : 'text-muted-foreground'"
+                          >{{ t }}</span>
                         </Hint>
                       </template>
                     </span>

@@ -62,6 +62,23 @@ export function tagHint(t: string): string | undefined {
 }
 
 /**
+ * 两档墨色的分界：这三条意味着「整仓清理会被拒」（repos 复核的 fail-closed 三态），
+ * 是行动预警；嵌套 / 有产物 / 陈旧 / 大只是口径说明。预警不能长得跟脚注一样——
+ * 落的是「值近黑、元数据灰」这条层级原则（Assets.vue 数据列注释），不引入新颜色。
+ * 名单钉着 Rust 侧的拒绝判据，新增阻断性标签时在这里登记。
+ */
+export const BLOCKER_TAGS: ReadonlySet<string> = new Set(["未推送", "有改动", "有 stash"]);
+
+export function isBlockerTag(t: string): boolean {
+  return BLOCKER_TAGS.has(t);
+}
+
+/** 阻断项排最前：标签段限宽会静默截断，被裁掉的必须是说明项，不能是预警。 */
+export function orderedTags(tags: string[]): string[] {
+  return [...tags.filter(isBlockerTag), ...tags.filter((t) => !isBlockerTag(t))];
+}
+
+/**
  * 「清理」按钮的判据（2026-10-24 随检查器拆分下沉，表格无关）。三个条件都要
  * 满足：本组有删除实现（后端下发的 `supports_clean`）、行本身 `cleanable`、
  * 且是宿主机路径。

@@ -25,7 +25,7 @@ Scanner trait → AssetGroup → scan-cache.json → tauri command → Vue 表�
 - **`scanners()` 注册顺序 = 侧栏顺序 = `scan::GROUP_ORDER` 固定语义序**（D13）：repos → java → ios → android → harmony → toolchain → ai_tools → local_models → wsl（源码 → 环境 → 缓存 → 工具 → 模型 → 虚拟机）。**不按体积排序**——顺序随数据跳会丢失空间记忆。`with_overview` 两条路径（扫完 / 读缓存）都按它重排并插入总览，**缓存里的旧顺序也显示为新序**。未知 id 排最后；新增分组须登记 `GROUP_ORDER`（`scanner_registration_follows_group_order` 守着）。总览**不在** `scanners()`——由 `scan::synthesize_overview` 现算（纯函数，不碰磁盘），行顺序同序。**缓存里不存总览**：否则总览与分组会对不上。总览行 id 是 `overview:<分组id>`、path 是 `overview://<分组id>`（不是宿主机路径，`isLocalPath()` 天然不给动作）。
 - `run_full_scan` 用 rayon **并行**跑各扫描器（`Scanner: Send + Sync` 为此加）。但并行只能收回一部分：体积统计密集型扫描器并发会互相拖慢（APFS 元数据操作在设备层排队），别指望并行把总时间压回单组之和以下。
 - **「Git 仓库」默认位置只读，允许补充目录**：`roots::default_roots()` 探测 `~/Documents/Code`、`~/Projects`、`~/Developer`、`~/code`、`~/src`、`~/workspace`（只收存在的目录，全无时兜底 `~/Documents`）。真实空状态提供「补充目录」原生选择器，设置「Git 仓库扫描目录」统一添加/移除，**只影响 repos、不全盘搜索、移除不删除文件**。补充目录落盘 `repo-roots.json`，清缓存保留配置；离线目录保留且可移除。全量/单组/清理共用 `roots::for_scan`。**补充目录不接受与现有范围重叠**（`roots::overlap_of`：同一处、互为父子都拒，Windows 上路径比较不分大小写），判据是纯函数、两种大小写口径都能测；仓库层面仍按路径去重（补充目录与默认位置指向同一棵树时同一仓库只记一次）。增删后只重扫 repos（无缓存才全量）；配置与扫描由同一锁串行，缓存记录补充范围，若配置已写入但扫描中断，启动隐藏旧 repos 结果并提示手动重扫，**不触发后台扫描**。
-- **前端形态（原型 v3 为基准）**：侧栏通高（`titleBarStyle: "Overlay"` + `hiddenTitle`，空区与工具栏挂 `data-tauri-drag-region`），主区「列表 + 右侧 252px 检查器」主从结构（窗口 <1040 默认收起），工具栏承载维度筛选（弹出菜单带计数）、搜索、外观切换、重扫与「数据更新于」。窗口 1180×760 / minWidth 880。动作面：访达中显示在检查器动作条；复制路径只在行右键菜单（2026-10-19 从检查器动作条收掉，别两边各挂一个）。
+- **前端形态（原型 v3 为基准）**：侧栏通高（macOS 靠 `tauri.macos.conf.json` 的 `titleBarStyle: "Overlay"`——平台配置覆盖基础配置，基础 `tauri.conf.json` 只有 Windows 形态即系统标题栏，改窗口配置两边都要看；空区与工具栏挂 `data-tauri-drag-region`），主区「列表 + 右侧 252px 检查器」主从结构（窗口 <1040 默认收起），工具栏承载维度筛选（弹出菜单带计数）、搜索、外观切换、重扫与「数据更新于」。窗口 1180×760 / minWidth 880。动作面：访达中显示在检查器动作条；复制路径只在行右键菜单（2026-10-19 从检查器动作条收掉，别两边各挂一个）。
 
 ## 硬约束
 
@@ -174,7 +174,7 @@ cd src-tauri && cargo test                # 只跑 Rust 测试（本机真实数
 cd src-tauri && cargo run --example dump  # 扫一次写缓存再读回，输出 JSON 供人工核对
 ```
 
-测试目前 151 passed + 2 ignored（约 6 秒；ignored 的是对照 bench `bench_native_size_vs_du` 与真实数据守恒检查 `repo_nesting_real_data_stays_conserved`）。**用例数随刀增长，改了扫描逻辑顺手更新这个数**——它过期时最容易骗人。**扫描逻辑的测试优先喂临时目录、不依赖本机装了什么**，且**测试要自己写一份独立实现当基准**（`tree_bytes`），别拿被测代码当 oracle——两边一起错会一起绿；反过来，扫真实数据的用例容差要按「数据是活的」给，不能用它证明精度。各 Scanner 的测试思路范例（docker 喂真实 CLI 输出、toolchain 全喂假 home、WSL 读取走注入——「本机不注册」不等于「没测」）见 appendix。
+测试目前 156 passed + 2 skipped（约 8 秒；skipped 的是对照 bench `bench_native_size_vs_du` 与真实数据守恒检查 `repo_nesting_real_data_stays_conserved`）。**用例数随刀增长，改了扫描逻辑顺手更新这个数**——它过期时最容易骗人。**扫描逻辑的测试优先喂临时目录、不依赖本机装了什么**，且**测试要自己写一份独立实现当基准**（`tree_bytes`），别拿被测代码当 oracle——两边一起错会一起绿；反过来，扫真实数据的用例容差要按「数据是活的」给，不能用它证明精度。各 Scanner 的测试思路范例（docker 喂真实 CLI 输出、toolchain 全喂假 home、WSL 读取走注入——「本机不注册」不等于「没测」）见 appendix。
 
 ## 代码风格
 

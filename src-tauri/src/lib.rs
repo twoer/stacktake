@@ -165,12 +165,15 @@ const SCAN_PROGRESS_EVENT: &str = "scan-progress";
 /// 不用等第一个分组扫完），之后每完成一个分组报一次。
 ///
 /// 扫描器是**并行**的，完成顺序不固定，所以前端只按 `done / total` 画比例，
-/// 不指望顺序；`label` 只是给「刚刚完成的是谁」做展示。
+/// 不指望顺序；`label` 只是给「刚刚完成的是谁」做展示。`labels` 是本次扫描
+/// 的全部分组名（注册序 = GROUP_ORDER 语义序），首扫空态据此把所有分组
+/// 预排成行账——组名开扫第一拍就全可见，扫完一行前端点亮一行。
 #[derive(Clone, serde::Serialize)]
 struct ScanProgress {
     done: usize,
     total: usize,
     label: String,
+    labels: Vec<String>,
 }
 
 /// 真扫一次并写缓存。缓存写失败只影响下次启动速度，不该影响本次结果。
@@ -185,6 +188,7 @@ async fn run_full_scan(app: &AppHandle) -> Result<ScanResult, String> {
         use rayon::prelude::*;
         let scanners = scanners_with_roots(roots.paths);
         let total = scanners.len();
+        let labels: Vec<String> = scanners.iter().map(|s| s.label().to_string()).collect();
 
         let _ = app_for_scan.emit(
             SCAN_PROGRESS_EVENT,
@@ -192,6 +196,7 @@ async fn run_full_scan(app: &AppHandle) -> Result<ScanResult, String> {
                 done: 0,
                 total,
                 label: String::new(),
+                labels: labels.clone(),
             },
         );
 
@@ -210,6 +215,7 @@ async fn run_full_scan(app: &AppHandle) -> Result<ScanResult, String> {
                         done: n,
                         total,
                         label: g.label.clone(),
+                        labels: labels.clone(),
                     },
                 );
                 g
@@ -340,6 +346,7 @@ async fn run_group_scan(app: &AppHandle, group_id: &str) -> Result<ScanResult, S
                 done: 0,
                 total: 1,
                 label: group_label.to_string(),
+                labels: vec![group_label.to_string()],
             },
         );
         let g = scanner.scan();
@@ -349,6 +356,7 @@ async fn run_group_scan(app: &AppHandle, group_id: &str) -> Result<ScanResult, S
                 done: 1,
                 total: 1,
                 label: g.label.clone(),
+                labels: vec![g.label.clone()],
             },
         );
         g

@@ -120,7 +120,8 @@ const repos: AssetGroup = {
       id: "X:\\dev\\fixtures\\repo-c",
       name: "repo-c",
       path: "X:\\dev\\fixtures\\repo-c",
-      tags: ["大", "陈旧"],
+      // 唯一带阻断标签（有改动）的行：基线截图里两档墨色与「阻断项排最前」靠它自验
+      tags: ["大", "陈旧", "有改动"],
       metrics: {
         size: bytes(3.1 * GB),
         last_commit: count(ago(200)),

@@ -169,6 +169,8 @@ export interface ScanProgress {
   total: number
   /** 刚完成的分组名。扫描器并行跑，完成顺序不固定，展示用 */
   label: string
+  /** 本次扫描的全部分组名（注册序）。首扫空态据此预排行账，完成一行点亮一行 */
+  labels: string[]
 }
 
 /** Rust `update.rs::DownloadProgress` 的对应结构——下载进度事件（"update-download-progress"）的载荷。 */
