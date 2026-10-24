@@ -17,7 +17,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import ScanBar from "@/components/ScanBar.vue";
 
 const router = useRouter();
-const { groups, cachedAt, loading, progress, rescan } = useAssets();
+const { groups, cachedAt, loading, progress, rescan, now } = useAssets();
 const {
   roots: repoRoots,
   pending: repoRootsPending,
@@ -81,6 +81,10 @@ async function openLink(url: string) {
 }
 
 const scanning = computed(() => loading.value);
+/** 「当前数据更新于」与 Assets 状态栏接同一根时间针：开着过夜也要往前走。 */
+const cachedAtLabel = computed(() =>
+  cachedAt.value ? formatAgo(cachedAt.value, now.value) : "—",
+);
 const scanPct = computed(() => {
   const p = progress.value;
   return p && p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
@@ -170,7 +174,7 @@ const dlPct = computed(() => {
           <h2 class="text-[13px] font-medium">缓存</h2>
           <p class="mt-1 leading-relaxed text-muted-foreground">
             扫描结果存在本机缓存里，启动直接读（毫秒级），只有首次运行或缓存被清才真扫。
-            当前数据更新于 <span class="tabular-nums">{{ cachedAt ? formatAgo(cachedAt) : "—" }}</span>。
+            当前数据更新于 <span class="tabular-nums">{{ cachedAtLabel }}</span>。
           </p>
           <!-- 缓存被清空后的引导态：groups 为空且 cachedAt 为 null 时显示 -->
           <div v-if="!cachedAt && groups.length === 0" class="mt-3 rounded-md border border-border/40 bg-muted/40 px-3 py-2.5">

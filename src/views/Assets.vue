@@ -56,6 +56,7 @@ const {
   scanDoneLabels,
   cachedAt,
   groupSavedAt,
+  now,
   rescan,
   rescanGroup,
 } = useAssets();
@@ -342,17 +343,19 @@ function onGlobalKeyDown(e: KeyboardEvent) {
     }
     return;
   }
-  // 「/」聚焦搜索框（输入框里不拦）。搜索框暂时隐藏（v-if="false"）时元素不存在，
-  // 不拦这个键，让它正常输入斜杠。
+  // 键盘先问输入框：/ 不抢聚焦（搜索框暂时隐藏（v-if="false"）时元素不存在，
+  // 也不拦这个键，让它正常输入斜杠）；↑↓ 不抢光标——搜索框恢复那天（AssetsToolbar
+  // 里留着 v-if 等着删），缺这条守卫就会一边过滤一边改动幕后的选中行。
   const tag = (e.target as HTMLElement | null)?.tagName;
-  if (e.key === "/" && tag !== "INPUT" && tag !== "TEXTAREA") {
+  const inText = tag === "INPUT" || tag === "TEXTAREA";
+  if (e.key === "/" && !inText) {
     const input = document.getElementById("row-search");
     if (!input) return;
     e.preventDefault();
     input.focus();
     return;
   }
-  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+  if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !inText) {
     const ids = visibleRows.value.map((r) => r.item.id);
     if (!ids.length) return;
     e.preventDefault();
@@ -362,7 +365,27 @@ function onGlobalKeyDown(e: KeyboardEvent) {
       Math.min(ids.length - 1, (cur < 0 ? -1 : cur) + (e.key === "ArrowDown" ? 1 : -1)),
     );
     selected.value = ids[next];
+    revealSelected();
   }
+}
+
+/**
+ * 键盘选到的行滚进视野。repos 两百多行一屏只装得下三十来行，↑↓ 走过一屏后
+ * 选中态还在动、屏上却什么变化都没有——选了等于没选。block: nearest 只在
+ * 目标出界时滚、不产生横向滚动；点击选中不走这里（点得到就看得见）。
+ * 吸顶表头盖住视口顶部一段，scrollIntoView 不认识它——不补 scroll-margin
+ * 的话，往回滚的行会正好停在表头底下。表头高度量当下 DOM，别在 CSS 里抄死。
+ */
+function revealSelected() {
+  const id = selected.value;
+  if (!id) return;
+  const el = scrollContent.value?.querySelector<HTMLElement>(
+    `[data-row-id="${CSS.escape(id)}"]`,
+  );
+  if (!el) return;
+  const header = scrollContent.value?.querySelector<HTMLElement>(".sticky");
+  el.style.scrollMarginTop = `${header?.offsetHeight ?? 0}px`;
+  el.scrollIntoView({ block: "nearest" });
 }
 
 onMounted(() => {
@@ -776,7 +799,7 @@ const machineStats = computed(() => {
   const recent = repos
     ? repos.items.filter((it) => {
         const m = it.metrics.last_commit;
-        return m && (m.t === "b" || m.t === "i") && Date.now() / 1000 - m.v < week;
+        return m && (m.t === "b" || m.t === "i") && now.value - m.v < week;
       }).length
     : 0;
   return { total, reclaim, count: real.length, recent };
@@ -830,7 +853,12 @@ const viewSavedAt = computed<number | null>(() => {
 });
 
 const stale = computed(
-  () => viewSavedAt.value != null && Date.now() / 1000 - viewSavedAt.value > 86400,
+  () => viewSavedAt.value != null && now.value - viewSavedAt.value > 86400,
+);
+
+/** 「数据更新于」的人话读数跟时间针走：开着过夜也要从「3 小时前」走到「一天前」。 */
+const savedAtLabel = computed(() =>
+  viewSavedAt.value == null ? "" : formatAgo(viewSavedAt.value, now.value),
 );
 
 /** 按钮文案随上下文：组视图 = 重扫本组（秒级）；总览与无数据态 = 全量重扫。
@@ -1253,7 +1281,7 @@ async function onRescan() {
             class="updated tabular-nums"
             :class="stale ? 'text-foreground' : ''"
           >
-            数据更新于 {{ formatAgo(viewSavedAt) }}
+            数据更新于 {{ savedAtLabel }}
           </span>
         </Hint>
         <Hint

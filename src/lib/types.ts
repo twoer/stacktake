@@ -284,8 +284,10 @@ export function formatBytesParts(b: number): { n: string; u: string } {
   return { n: s.slice(0, i), u: s.slice(i + 1) };
 }
 
-export function formatAgo(unixSeconds: number): string {
-  const diff = Date.now() / 1000 - unixSeconds
+/** `nowSecs` 默认墙钟；传时间针（useAssets 的 `now`）可让界面上的「X 前」
+ *  跟着钟走，而不是冻在最后一次重渲染的那一刻。 */
+export function formatAgo(unixSeconds: number, nowSecs: number = Date.now() / 1000): string {
+  const diff = nowSecs - unixSeconds
   if (diff < 0) return "刚刚"
   const d = Math.floor(diff / 86400)
   if (d === 0) {

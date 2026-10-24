@@ -34,6 +34,18 @@ const progress = ref<ScanProgress | null>(null);
  */
 const scanDoneLabels = ref<string[]>([]);
 
+/**
+ * 时间针：每分钟跳一次的「现在」（秒，与缓存时间戳同单位）。formatAgo、
+ * stale 这类读数依赖墙钟，而 Date.now() 不是响应式的——不接这根针，界面
+ * 开着过夜，「数据更新于 X 前」整夜不变，跨过 24 小时的「建议重扫」高亮
+ * 也要等下一次别的状态变化才出现。粒度对齐显示粒度（最细「X 分钟前」），
+ * 60 秒一跳足够；后台被节流没关系，回前台的下一次跳变会追上。
+ */
+const now = ref(Math.floor(Date.now() / 1000));
+window.setInterval(() => {
+  now.value = Math.floor(Date.now() / 1000);
+}, 60_000);
+
 // 模块级注册、随应用生命周期存活：进度事件只在扫描期间来，早注册不会漏掉
 // 开扫那一刻的 done: 0。非 Tauri 环境（浏览器里跑）invoke 会拒，吞掉即可。
 void listen<ScanProgress>("scan-progress", (e) => {
@@ -138,6 +150,7 @@ export function useAssets() {
     groupSavedAt,
     progress,
     scanDoneLabels,
+    now,
     activeId,
     current,
     applySnapshot,
