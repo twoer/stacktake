@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stacktake 截图基线台</title>
+    <script>
+      // 基线要确定性：钉死浅色主题，不跟随系统——否则截图随机器外观漂移，
+      // 前后两轮的差异就说不清来自改动还是主题。逻辑同 index.html 首帧定色。
+      try {
+        localStorage.setItem("stacktake-theme", "light");
+      } catch (e) {}
+    </script>
+    <!-- 截图确定性：强制根元素合成层提升。入场动画会把内容提升为合成层，
+         层内文字用灰度抗锯齿；无层时 Windows 走 ClearType 子像素抗锯齿——
+         两种模式的字形边缘像素不同，「动画跑过」与「动画冻结」的两轮截图
+         就会出现上万像素的假差异。全部提升后文字恒走灰度 AA，逐像素可比。 -->
+    <style>
+      html {
+        transform: translateZ(0);
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/harness/main.ts"></script>
+  </body>
+</html>

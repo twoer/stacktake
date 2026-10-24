@@ -1,29 +1,19 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import {
   AlertTriangle,
-  ChevronRight,
-  Copy,
-  FolderOpen,
-  ListFilter,
+  ArrowDown,
+  ArrowUp,
+  FolderPlus,
   LoaderCircle,
-  Moon,
-  PanelLeft,
   RefreshCw,
-  Search,
-  Sun,
-  Trash2,
-  X,
 } from "@lucide/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "vue-sonner";
 import type { AssetGroup, CleanResult, Item } from "@/lib/types";
 import {
-  artifactBytes,
   formatAgo,
-  formatMetric,
-  formatMetricBytes,
   formatBytes,
   groupReclaimable,
   groupSize,
@@ -31,12 +21,22 @@ import {
   reclaimableOf,
 } from "@/lib/types";
 import { useAssets } from "@/composables/useAssets";
-import { useTheme } from "@/composables/useTheme";
+import { useRepoRoots } from "@/composables/useRepoRoots";
 import { captureRowTops, playRowFlip } from "@/lib/motion";
+import { canCleanArtifactsItem, canCleanItem, cell, tagHint } from "@/lib/assets";
+import type { Dimension } from "@/lib/assets";
+import { isLocalPath } from "@/lib/path";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import ByteValue from "@/components/ByteValue.vue";
+import Hint from "@/components/Hint.vue";
 import ScanBar from "@/components/ScanBar.vue";
+import CleanDialog from "@/components/assets/CleanDialog.vue";
+import ArtifactCleanDialog from "@/components/assets/ArtifactCleanDialog.vue";
+import RowContextMenu from "@/components/assets/RowContextMenu.vue";
+import InspectorPanel from "@/components/assets/InspectorPanel.vue";
+import FilterMenu from "@/components/assets/FilterMenu.vue";
+import AssetsToolbar from "@/components/assets/AssetsToolbar.vue";
 
 const router = useRouter();
 const {
@@ -51,17 +51,20 @@ const {
   rescan,
   rescanGroup,
 } = useAssets();
-const { theme, toggle: toggleTheme } = useTheme();
-
-/** Windows 上 Overlay 标题栏把原生最小化/最大化/关闭浮在右上，工具栏右侧要留位 */
-const isWindows = navigator.userAgent.includes("Windows");
-
-/**
- * 工具栏控件共同形态：ghost，无描边，hover 才给底。
- * 一排描边小盒子是「线条感」的最大来源——六个控件六个框，读起来像表单。
- */
-const toolbarCtl =
-  "flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+// 主题切给 AssetsToolbar 自己管（useTheme 单例）；本文件不再读它。
+const {
+  roots: repoRoots,
+  pending: repoRootsPending,
+  error: repoRootsError,
+  busy: repoRootsBusy,
+  loadRoots,
+  addRoot,
+} = useRepoRoots();
+// 只在真实扫描为空时读取配置，搜索/筛选无匹配不应引导用户改变扫描范围。
+const reposEmpty = computed(() => current.value?.id === "repos" && current.value.items.length === 0);
+watch(reposEmpty, (empty) => {
+  if (empty) void loadRoots();
+}, { immediate: true });
 
 // ---- 视图状态（切分组时清掉，否则上个分组的排序和筛选会莫名其妙跟过来）----
 const sortKey = ref<string | null>("size");
@@ -82,7 +85,7 @@ const inspectorOpen = ref(window.innerWidth >= 1040);
  */
 const rulesOpen = ref(false);
 /** 内容滚动容器：切组回顶；FLIP 以它内部的行位移为坐标系。 */
-const scrollArea = ref<HTMLElement | null>(null);
+const scrollArea = ref<InstanceType<typeof ScrollArea> | null>(null);
 const scrollContent = ref<HTMLElement | null>(null);
 
 watch(activeId, () => {
@@ -149,28 +152,6 @@ function flashChanged(before: Map<string, number>) {
 /** 右键菜单的位置与目标条目。null = 没打开。 */
 const menu = ref<{ x: number; y: number; item: Item } | null>(null);
 
-/** 文案按平台给：macOS 说访达，Windows 说资源管理器。 */
-const revealLabel = isWindows ? "在资源管理器中显示" : "在访达中显示";
-
-/**
- * 只有宿主机绝对路径才谈得上「显示位置」或「复制了直接用」。
- * `Item.path` **不都是**宿主机路径——docker 的是 `docker://<镜像名>`，
- * 总览行的是 `overview://<分组id>`，都没有可揭示的位置。
- */
-function isLocalPath(p: string): boolean {
-  return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
-}
-
-/** 靠右或靠下时往回收，别让菜单跑出窗口（菜单约 176×64）。 */
-const menuStyle = computed(() => {
-  const m = menu.value;
-  if (!m) return {};
-  return {
-    left: `${Math.max(4, Math.min(m.x, window.innerWidth - 180))}px`,
-    top: `${Math.max(4, Math.min(m.y, window.innerHeight - 72))}px`,
-  };
-});
-
 function openMenu(e: MouseEvent, item: Item) {
   // 不是本机路径就不弹——弹一个两项都点不动的菜单比不弹更糟
   if (!isLocalPath(item.path)) return;
@@ -219,47 +200,8 @@ async function onCopyPath(item: Item) {
 /** 清理确认弹窗的目标条目。null = 没打开。 */
 const cleanTarget = ref<Item | null>(null);
 
-/**
- * 三个条件都要满足：本组有删除实现（后端下发的 `supports_clean`）、行本身
- * `cleanable`、且是宿主机路径。
- *
- * **为什么不写死分组 id**（S3 起）：S2 之前这里判的是 `id === "repos"`。
- * 加第二个分组（toolchain）就得去改那个字符串，漏改的后果是「界面给按钮、
- * 服务端拒绝」或反过来——后者更坏，用户会以为这个工具没有清理功能。
- * 能力的唯一真相在 Rust 侧（`Scanner::supports_clean` → `AssetGroup` 字段）。
- *
- * 行级 `cleanable` 与分组级是两个粒度：toolchain 组 `supports_clean` 为 true，
- * 但有官方清理命令的那 6 条 `cleanable` 是 false——它们要用人自己的命令清，
- * 而 `pnpm store prune` 只删没被引用的包，比搬走整个目录精确。
- */
-function canClean(item: Item): boolean {
-  return !!current.value?.supports_clean && !!item.cleanable && isLocalPath(item.path);
-}
-
-/**
- * 弹窗里那条「会怎样」的描述。三种性质不同，不能共用一句话：
- * 删仓库丢源码、删缓存只花重下的时间、删 AI 工具数据里的**会话丢历史**。
- */
-const cleanKind = computed(() => {
-  const id = current.value?.id;
-  if (id === "repos") return "repo";
-  if (id === "ai_tools") return "ai";
-  return "cache";
-});
-
-/** AI 工具行的类别标签（后端 `metrics.kind`）；缺失时给中性词，不猜。 */
-function aiKindLabel(item: Item | null): string {
-  const m = item?.metrics.kind;
-  return m && m.t === "s" ? String(m.v) : "数据";
-}
-
-/** 工具链缓存删掉的后果：按 detail 的说明逐条显示，不空喊「可恢复」。 */
-function cleanNote(item: Item): string {
-  return item.detail?.["3. 说明"] ?? "";
-}
-
 function askClean(item: Item) {
-  if (!canClean(item)) return;
+  if (!canCleanItem(current.value, item)) return;
   cleanTarget.value = item;
 }
 
@@ -268,78 +210,17 @@ function askClean(item: Item) {
 // 与整仓清理并行的第二个破坏性动作：只清白名单内的产物目录（node_modules /
 // target…），源码与 .git 保留。三道闸同构：确认弹窗（本文件）+ 服务端按白名单
 // 现找产物目录复核 + 废纸篓。同样**不进右键菜单**。范围用 `scope: "artifacts"`
-// 传给后端，产物集合由服务端在点击那一刻重新找出——前端不传产物路径，
-// 服务端也不信任它们。
+// 传给后端；前端仅传勾选的相对路径，服务端逐条重新复核。
 
 /** 产物清理确认弹窗的目标条目。null = 没打开。 */
 const artifactTarget = ref<Item | null>(null);
 
 /**
- * 弹窗里勾中的产物目录（存的是 detail 里的**相对路径**，与检查器「产物明细」
- * 同一套标识）。打开弹窗时全选——保持「清理产物 = 清这个仓库的全部产物」的
- * 旧语义，取消勾选才收缩范围。空集合时确认按钮禁用。
+ * 「清理产物」的判据与整仓清理是两个动作（判据在 lib/assets：canCleanArtifactsItem）。
  */
-const artifactPicked = ref<Set<string>>(new Set());
-
-/** 弹窗列表：与检查器同一份解析结果，只是换了目标条目。 */
-const artifactDialogRows = computed(() => artifactRowsOf(artifactTarget.value));
-
-/** 已勾目录的估算合计（人类可读串反推字节，只用于即时预览）。 */
-const artifactPickedBytes = computed(() =>
-  artifactDialogRows.value.reduce(
-    (s, r) =>
-      s +
-      (r.kind === "row" && artifactPicked.value.has(r.rel) ? bytesFromParts(r.num, r.unit) : 0),
-    0,
-  ),
-);
-
-const artifactAllPicked = computed(
-  () =>
-    artifactDialogRows.value.filter((r) => r.kind === "row").length > 0 &&
-    artifactDialogRows.value
-      .filter((r) => r.kind === "row")
-      .every((r) => r.kind === "row" && artifactPicked.value.has(r.rel)),
-);
-
-/** 部分勾选：给「全选」那个框走 indeterminate（半选）态，比 unchecked 更诚实。 */
-const artifactSomePicked = computed(() => {
-  const rows = artifactDialogRows.value.filter((r) => r.kind === "row");
-  const n = rows.filter((r) => r.kind === "row" && artifactPicked.value.has(r.rel)).length;
-  return n > 0 && n < rows.length;
-});
-
-function toggleAllArtifacts(on: boolean) {
-  artifactPicked.value = new Set(
-    on ? artifactDialogRows.value.filter((r) => r.kind === "row").map((r) => r.rel) : [],
-  );
-}
-
-/** 单行勾选：reka-ui 的 v-model 只出 boolean | "indeterminate"，不认 Set——
- *  显式收敛成 Set 增删，Set 仍是唯一真相（确认时从它展开 targets）。 */
-function toggleArtifact(rel: string, on: boolean) {
-  const next = new Set(artifactPicked.value);
-  if (on) next.add(rel);
-  else next.delete(rel);
-  artifactPicked.value = next;
-}
-
-/**
- * 「清理产物」的判据与 `canClean` 是两个动作：整仓删除看 `cleanable`
- * （复核未推送/改动），产物清理看 `metrics.artifacts`（复核白名单）。
- * 没有 `supports_clean` 的组、非宿主机路径一律不给。
- */
-function canCleanArtifacts(item: Item): boolean {
-  return !!current.value?.supports_clean && artifactBytes(item) > 0 && isLocalPath(item.path);
-}
-
 function askCleanArtifacts(item: Item) {
-  if (!canCleanArtifacts(item)) return;
-  artifactPicked.value = new Set(
-    artifactRowsOf(item)
-      .filter((r) => r.kind === "row")
-      .map((r) => r.rel),
-  );
+  if (!canCleanArtifactsItem(current.value, item)) return;
+  // 打开即全选的默认在弹窗组件内初始化（watch target）
   artifactTarget.value = item;
 }
 
@@ -364,31 +245,13 @@ async function applyCleanResult(r: CleanResult) {
 
 // ---- 弹窗焦点管理 ----
 //
-// 两个清理弹窗都是破坏性确认的必经路径，键盘用户三条都要有：
-// ① 打开时焦点进弹窗——落在「取消」上（安全默认，不会误触确认）；
-// ② 关闭时把焦点还给打开前那个元素（检查器里的「清理」按钮）；
-// ③ Tab 在弹窗内循环，不穿到背后的表格上。
-// 缺了这三条，键盘用户打开弹窗后焦点还在背后的行上，Enter/空格会继续操作表格。
+// 焦点的「进（落取消）/ 还（回检查器按钮）」在两个弹窗组件内部
+// （`useModalFocus`）；这里只留 Tab 圈闭需要的弹窗根元素——
+// 组件经 defineExpose 暴露的 rootEl。开合真相（cleanTarget /
+// artifactTarget）在父组件：全局键盘的 Escape 优先级要读它。
 
-const cleanDialog = ref<HTMLElement | null>(null);
-const artifactDialog = ref<HTMLElement | null>(null);
-/** 弹窗打开前聚焦的元素；关闭时还回去。元素被重渲染掉时 focus() 是无害空操作。 */
-let dialogReturnFocus: HTMLElement | null = null;
-
-function watchDialogFocus(target: Ref<Item | null>, dialog: Ref<HTMLElement | null>) {
-  watch(target, (t) => {
-    if (t) {
-      dialogReturnFocus = document.activeElement as HTMLElement | null;
-      // watch 默认在 DOM 更新前跑，弹窗是 v-if 出来的，要等下一 tick 才在文档里
-      nextTick(() => dialog.value?.querySelector<HTMLElement>("[data-dialog-cancel]")?.focus());
-    } else {
-      dialogReturnFocus?.focus();
-      dialogReturnFocus = null;
-    }
-  });
-}
-watchDialogFocus(cleanTarget, cleanDialog);
-watchDialogFocus(artifactTarget, artifactDialog);
+const cleanDialog = ref<InstanceType<typeof CleanDialog> | null>(null);
+const artifactDialog = ref<InstanceType<typeof ArtifactCleanDialog> | null>(null);
 
 async function confirmClean() {
   const item = cleanTarget.value;
@@ -406,13 +269,10 @@ async function confirmClean() {
   }
 }
 
-async function confirmCleanArtifacts() {
-  const item = artifactTarget.value;
-  if (!item) return;
+async function confirmCleanArtifacts(targets: string[], item: Item) {
   const groupId = current.value?.id;
   if (!groupId) return;
   // 空勾选不发请求：服务端会把空数组当「什么都没选中」拒掉，前端先挡一道
-  const targets = [...artifactPicked.value];
   if (targets.length === 0) return;
   artifactTarget.value = null;
   try {
@@ -456,7 +316,7 @@ function onGlobalKeyDown(e: KeyboardEvent) {
   }
   // 弹窗开着时键盘归弹窗：Tab 在弹窗内循环（两个弹窗都只有「取消 / 确认」两个按钮），
   // 其余快捷键一律不响应——否则 "/" 会把焦点搜到背后的表格、↑↓ 会改动幕后的选中行。
-  const openDialog = cleanDialog.value ?? artifactDialog.value;
+  const openDialog = cleanDialog.value?.rootEl ?? artifactDialog.value?.rootEl;
   if (openDialog) {
     if (e.key === "Tab") {
       const nodes = [...openDialog.querySelectorAll<HTMLElement>("button:not([disabled])")];
@@ -513,86 +373,6 @@ onUnmounted(() => {
   window.removeEventListener("keydown", onGlobalKeyDown);
   window.clearTimeout(flashTimer);
 });
-
-/** detail 的键名带 `N. ` 排序前缀（Rust 侧为保证 HashMap 顺序加的），展示时去掉。 */
-function detailLabel(key: string): string {
-  return key.replace(/^\d+\.\s*/, "");
-}
-
-/** 产物明细在 Rust 侧是**单键多行字符串**（`{相对路径} · {体积}` 逐行，见
- * `repos.rs` 的 `MAX_DETAIL_ROWS` 那段）。这里拆成结构化行再渲染。
- *
- * 为什么不改数据结构：detail 是 `HashMap<String, String>`，动它要 SCHEMA_VERSION
- * +1，清理弹窗那条「构建产物」与 `tests.rs` 的明细断言也得跟着改。而这块缺的
- * 全是排印——一条一行、体积右对齐、末段目录名恒完整——拆一次字符串就能达到，
- * 不值得动缓存契约。
- */
-type ArtifactRow =
-  | { kind: "row"; rel: string; dir: string; base: string; num: string; unit: string }
-  | { kind: "note"; text: string };
-
-/** Rust 侧拼出来的键名（无 `N. ` 前缀，但取值仍按 detailLabel 比对以防将来加）。 */
-const ARTIFACT_DETAIL = "产物明细";
-
-/** 弹窗勾选用：`human_bytes` 的「值 + 单位」还原成字节，只用于估算合计。
- *  真实腾出量以 `CleanResult.freed_bytes` 为准——这里是勾选时的即时预估。 */
-const BYTE_UNITS: Record<string, number> = {
-  B: 1,
-  KB: 1024,
-  MB: 1024 ** 2,
-  GB: 1024 ** 3,
-  TB: 1024 ** 4,
-};
-
-function bytesFromParts(num: string, unit: string): number {
-  const k = BYTE_UNITS[unit];
-  const v = Number.parseFloat(num);
-  return k && Number.isFinite(v) ? Math.round(v * k) : 0;
-}
-
-function parseArtifactRows(text: string): ArtifactRow[] {
-  return text
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map<ArtifactRow>((line) => {
-      // 体积是最后一段：路径里不会有 " · "（Rust 侧就是这么拼的）。
-      // 拆不到体积的行是汇总句（「…其余 N 个目录略」），原样留灰字。
-      const cut = line.lastIndexOf(" · ");
-      if (cut < 0) return { kind: "note", text: line };
-      const rel = line.slice(0, cut);
-      const size = line.slice(cut + 3).trim();
-      // 体积不再转回字节喂 ByteValue：`human_bytes` 已经定过精度，来回换算会让
-      // 1004.5 MB 变成 1 GB。直接拆「值 / 单位」两半，排印规则与 ByteValue 一致。
-      const sp = size.lastIndexOf(" ");
-      const num = sp < 0 ? size : size.slice(0, sp);
-      const unit = sp < 0 ? "" : size.slice(sp + 1);
-      // 末段恒完整、父路径优先被截：6 个同名 node_modules 靠父路径区分，
-      // 截父路径的损失远小于把目录名截成 "node_m…"。
-      // **两种分隔符都要认**：Windows 上 `strip_prefix` 出来的相对路径是
-      // `apps\desktop\node_modules`，只认 `/` 会让整串变成一个 base、层级全丢。
-      const slash = Math.max(rel.lastIndexOf("/"), rel.lastIndexOf("\\"));
-      return {
-        kind: "row",
-        rel,
-        dir: slash < 0 ? "" : rel.slice(0, slash + 1),
-        base: slash < 0 ? rel : rel.slice(slash + 1),
-        num,
-        unit,
-      };
-    });
-}
-
-function cell(it: Item, key: string, temporal?: boolean): string {
-  const m = it.metrics[key];
-  if (!m) return "—";
-  if (key === "size") {
-    // 0 B 在本地模型这类分组里是「账面为 0」（模型缺失、只留了元数据），一排
-    // `0 B` 看着像扫描失败。改成与空值同形态的「—」，排序仍按 0 走，不受影响。
-    if ((m.t === "b" || m.t === "i") && m.v <= 0) return "—";
-    return formatMetricBytes(m);
-  }
-  return formatMetric(m, temporal);
-}
 
 // ---- 列 ----
 
@@ -787,12 +567,6 @@ const PREFIX_LABEL: Record<string, string> = {
   local_models: "来源",
 };
 
-interface Dimension {
-  key: string;
-  label: string;
-  options: string[];
-}
-
 function dimensionsFor(g: AssetGroup | null): Dimension[] {
   if (!g || !g.items.length) return [];
   const dims: Dimension[] = [];
@@ -858,8 +632,6 @@ function setDim(key: string, value: string | null) {
   });
 }
 const anyFilter = computed(() => Object.values(dims.value).some(Boolean));
-/** 生效中的维度数。漏斗按钮上那个小数字，0 时不显示。 */
-const activeDims = computed(() => Object.values(dims.value).filter(Boolean).length);
 
 function clearFilters() {
   withRowFlip(() => {
@@ -917,6 +689,14 @@ const suppressedTags = computed(() => {
   return out;
 });
 
+// ---- 标签释义 ----
+//
+// 标签是筛选维度的取值（Rust 侧定死，`scan/tests.rs` 断言钉着），所以不能靠
+// 改名把它说清楚——只能在 hover 上补一句。补的这句只解释「这条是怎么判出来的」，
+// 不重复行里已经有的数字。
+//
+// 两个数字（200 MB / 180 天）与 Rust 侧 `LARGE_REPO_BYTES` / `STALE_DAYS`
+// （`src-tauri/src/scan/repos.rs`）对齐。改那边要同步改这里，否则提示会撒谎。
 function visibleTags(it: Item): string[] {
   return it.tags.filter((t) => {
     if (suppressedTags.value.has(t)) return false;
@@ -964,48 +744,14 @@ function onRowClick(it: Item) {
 }
 
 // ---- 检查器 ----
+// 内容在 InspectorPanel（拆分计划阶段 3）；这里只保留选中行的查找与传参。
+// rulesOpen 仍在本组件：检查器在总览视图整体卸载，「切分组不重置」的
+// 折叠语义靠这里持值经 v-model 传下去才保得住。
 
 const selectedRow = computed(() => {
   if (!selected.value) return null;
   return current.value?.items.find((it) => it.id === selected.value) ?? null;
 });
-
-/** 检查器内容切换时重放一次 page-in；把分组 id 也编进 key，
- *  否则「未选中行」在各分组间切换时 key 不变，页面没有进入动效。 */
-const inspectorKey = computed(
-  () => selectedRow.value?.id ?? `group:${current.value?.id ?? ""}`,
-);
-
-/** detail 里除「产物明细」之外的键——它走独立子表，不再当「label + 一段文本」渲染。 */
-const detailEntries = computed(() =>
-  Object.entries(selectedRow.value?.detail ?? {}).filter(
-    ([k]) => detailLabel(k) !== ARTIFACT_DETAIL,
-  ),
-);
-
-/** 解析任意条目的产物明细（检查器读选中行、清理弹窗读目标条目）。 */
-function artifactRowsOf(item: Item | null): ArtifactRow[] {
-  const detail = item?.detail;
-  if (!detail) return [];
-  const hit = Object.entries(detail).find(([k]) => detailLabel(k) === ARTIFACT_DETAIL);
-  return hit ? parseArtifactRows(hit[1]) : [];
-}
-
-const artifactRows = computed(() => artifactRowsOf(selectedRow.value));
-
-/**
- * 产物明细行的绝对路径：明细里是相对路径（Rust 侧 `strip_prefix` 过），根目录取
- * 当前行的 `path`。产物明细只由 repos 产出，那条 `path` 恒是宿主机绝对路径
- * （扫描根目录来自 `default_roots()`，基于 home），所以这里不再过一遍 `isLocalPath`。
- */
-function artifactPath(rel: string): string {
-  const root = selectedRow.value?.path ?? "";
-  return /[\\/]$/.test(root) ? root + rel : `${root}/${rel}`;
-}
-
-const reclaimTotal = computed(() =>
-  current.value ? groupReclaimable(current.value) : 0,
-);
 
 /** 总览首块「本机合计」：总占用 / 可回收 / 分组数 / 近 7 天有提交。 */
 const machineStats = computed(() => {
@@ -1107,159 +853,29 @@ async function onRescan() {
 
 <template>
   <div class="flex h-full min-h-0 flex-col">
-    <!-- 工具栏：标题 + 维度筛选 + 搜索 + 外观/检查器/重扫。
-         空区是窗口拖动区（titleBarStyle: Overlay 要自己给）。
-         整条挂 drag-region，控件用 pointer-events: auto 恢复交互。 -->
-    <div class="flex h-11 shrink-0 items-center gap-2 border-b border-border/40 bg-background px-3" data-tauri-drag-region>
-      <h1 class="min-w-0 truncate text-sm font-semibold">
-        {{ current?.label ?? (loading ? "首次扫描…" : "无数据") }}
-      </h1>
-      <!-- 条目数不挂在这里：状态栏与检查器概览各有一份，同一屏三处「238 项 · 109 GB」
-           是纯重复。工具栏留给标题与控件。 -->
+    <!-- 工具栏（AssetsToolbar）：标题与重扫文案父算好传入，中段筛选走插槽。 -->
+    <AssetsToolbar
+      :title="current?.label ?? (loading ? '首次扫描…' : '无数据')"
+      :loading="loading"
+      :is-overview="isOverview"
+      v-model:inspector-open="inspectorOpen"
+      v-model:search="search"
+      :rescan-label="rescanLabel"
+      :rescan-title="rescanTitle"
+      @rescan="onRescan"
+    >
+      <FilterMenu
+        v-if="dimsOfCurrent.length"
+        :dims="dims"
+        :dimensions="dimsOfCurrent"
+        :open="openFilter"
+        :count-for="optionCount"
+        @set="setDim"
+        @clear="clearFilters"
+        @toggle="openFilter = !openFilter"
+      />
+    </AssetsToolbar>
 
-      <div class="flex-1" />
-
-      <!-- 筛选：一个漏斗按钮展开所有维度。总览没有维度可筛，按钮不出。
-           此前是「每个维度一个描边按钮 + 一个清空按钮」，分组多时工具栏一排小盒子，
-           线条感的主场；合并成一个入口也就不必给每个维度留位置。 -->
-      <div v-if="dimsOfCurrent.length" class="relative shrink-0" data-dim-menu>
-        <button
-          :class="[toolbarCtl, anyFilter ? 'text-foreground' : '']"
-          :title="anyFilter ? `筛选（已生效 ${activeDims} 项）` : '筛选'"
-          aria-label="筛选"
-          @click="openFilter = !openFilter"
-        >
-          <ListFilter class="size-3.5" />
-          <span
-            v-if="activeDims"
-            :key="activeDims"
-            class="badge-pop tabular-nums text-[10px]"
-          >{{ activeDims }}</span>
-        </button>
-        <div
-          v-if="openFilter"
-          class="menu-in absolute right-0 top-full z-30 mt-1 min-w-44 rounded-md border border-border bg-card py-1 shadow-md"
-        >
-          <template v-for="(d, i) in dimsOfCurrent" :key="d.key">
-            <div v-if="i" class="my-1 border-t border-border/60" />
-            <div class="px-2 pb-0.5 pt-1 text-[10px] text-muted-foreground">{{ d.label }}</div>
-            <button
-              class="flex w-full items-center justify-between gap-3 px-2 py-1 text-left text-xs text-foreground hover:bg-muted"
-              :class="!dims[d.key] ? 'font-medium' : ''"
-              @click="setDim(d.key, null)"
-            >
-              <span class="flex min-w-0 items-center gap-2">
-                <span class="filter-dot" :class="!dims[d.key] ? 'on' : ''" />
-                <span>全部</span>
-              </span>
-              <span class="tabular-nums text-muted-foreground">{{ optionCount(d.key, null) }}</span>
-            </button>
-            <button
-              v-for="v in d.options"
-              :key="v"
-              class="flex w-full items-center justify-between gap-3 px-2 py-1 text-left text-xs text-foreground hover:bg-muted"
-              :class="dims[d.key] === v ? 'font-medium' : ''"
-              @click="setDim(d.key, v)"
-            >
-              <span class="flex min-w-0 items-center gap-2">
-                <span class="filter-dot" :class="dims[d.key] === v ? 'on' : ''" />
-                <span class="truncate">{{ v }}</span>
-              </span>
-              <span class="tabular-nums text-muted-foreground">{{ optionCount(d.key, v) }}</span>
-            </button>
-          </template>
-          <div v-if="anyFilter" class="mt-1 border-t border-border/60 pt-1">
-            <button
-              class="flex w-full items-center px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              @click="clearFilters"
-            >
-              清除筛选条件
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- label 必须自己也是 flex：否则 input 作为 inline-block 按 baseline 对齐、底下还挂一段
-           strut 下行空隙，整个输入框在 WebKit 下向下溢出 2px，输入框里的文字因此比图标低
-           2.75px（固定在盒子中心的图标就显得偏高）。实测：加 flex 后 input 精确落在 0~24。 -->
-      <!-- 搜索先隐藏（2026-10-20）。整块 v-if 移出 DOM 而不是 display:none——
-           留在 DOM 里 `/` 还能把焦点打进一个看不见的输入框。恢复时删掉 v-if 即可，
-           下方的过滤逻辑与 `/` 快捷键守卫都原样保留。 -->
-      <label v-if="false" class="group relative flex h-6 shrink-0">
-        <span class="sr-only">按名称或路径筛选</span>
-        <!-- mt-px：label 改成 flex 后 input 正好占满 24px，但 WebKit 对 input 内部文字的
-             放置仍比盒子几何中心低 0.75px（改 line-height 无效，实测 leading-none 也是同一个值）。
-             实测下移 1px 后偏差从 +0.75 收到 -0.25。 -->
-        <Search
-          class="pointer-events-none absolute left-1.5 top-1/2 mt-px size-3 -translate-y-1/2 text-muted-foreground"
-        />
-        <input
-          id="row-search"
-          v-model="search"
-          type="search"
-          placeholder="筛选名称 / 路径"
-          class="h-6 w-32 appearance-none rounded-md bg-muted/60 pl-6 pr-6 text-xs text-foreground transition-[width] duration-150 placeholder:text-muted-foreground focus:w-52 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:w-40 sm:focus:w-56"
-        />
-        <!-- `/` 聚焦快捷键一直存在但没提示过；有输入内容或已聚焦时让位给清除按钮 -->
-        <!-- 下面三个挂件与放大镜同一个规则：都落在「input 文字的视觉中线」而不是盒子几何中心上，
-             所以一律带 mt-px（否则左右挂件之间会差这 1px）。 -->
-        <kbd
-          v-if="!search"
-          class="pointer-events-none absolute right-1.5 top-1/2 mt-px -translate-y-1/2 rounded border border-border bg-muted px-1 text-[10px] leading-none text-muted-foreground/70 group-focus-within:hidden"
-        >
-          /
-        </kbd>
-        <button
-          v-if="search"
-          class="absolute right-1 top-1/2 mt-px -translate-y-1/2 text-muted-foreground hover:text-foreground"
-          aria-label="清除筛选"
-          @click="search = ''"
-        >
-          <X class="size-3" />
-        </button>
-      </label>
-
-      <!-- 别给 Windows 加 caption 按钮避让：它有系统标题栏，窗口按钮不浮在 webview 上，
-           避让只会把重扫推离右缘（pr-[140px] 在 Windows 真机上就是这么露馅的）。 -->
-      <div class="flex shrink-0 items-center gap-1">
-        <!-- 图标语义是「点了去哪个模式」：深色里显示太阳（点它回浅色），反之月亮。
-             vue-sonner 自己不读 .dark class，theme 必须显式传。 -->
-        <Button
-          size="xs"
-          variant="ghost"
-          class="w-7 px-0"
-          :title="theme === 'dark' ? '切换到浅色' : '切换到深色'"
-          :aria-label="theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'"
-          @click="toggleTheme"
-        >
-          <Sun v-if="theme === 'dark'" />
-          <Moon v-else />
-        </Button>
-        <!-- 总览没有检查器（数字都在主区首块），开关一并隐藏，点了也是空操作 -->
-        <Button
-          v-if="!isOverview"
-          size="xs"
-          variant="ghost"
-          class="w-7 px-0"
-          :title="inspectorOpen ? '隐藏检查器' : '显示检查器'"
-          :aria-label="inspectorOpen ? '隐藏检查器' : '显示检查器'"
-          @click="inspectorOpen = !inspectorOpen"
-        >
-          <PanelLeft :class="inspectorOpen ? '' : 'opacity-50'" />
-        </Button>
-        <Button
-          size="xs"
-          variant="ghost"
-          :disabled="loading"
-          class="min-w-[4.5rem]"
-          :title="rescanTitle"
-          @click="onRescan"
-        >
-          <RefreshCw :class="loading ? 'motion-safe:animate-spin' : ''" />
-          {{ rescanLabel }}
-        </Button>
-      </div>
-    </div>
 
     <!-- 真实进度条：贴在工具栏下沿（U2），替掉按钮里一个干转的 spinner。
          U16 起 1px 淡墨线 + 行首笔尖；进度用 transform 走合成层。
@@ -1282,7 +898,7 @@ async function onRescan() {
 
     <!-- 主区：列表 + 检查器（主从，原型 v3） -->
     <div class="flex min-h-0 flex-1">
-      <div ref="scrollArea" class="min-w-0 flex-1 overflow-y-auto relative">
+      <ScrollArea ref="scrollArea" class="min-w-0 flex-1">
         <!-- key 按分组重挂内容，page-enter 才有「翻页」的方向感；数据重扫时
              id 不变，行只 patch，不重放整页进入动效。 -->
         <div
@@ -1327,11 +943,14 @@ async function onRescan() {
                   <ByteValue :bytes="machineStats.total" animate />
                 </p>
               </div>
-              <p class="pb-0.5 text-xs text-muted-foreground">
-                可回收
-                <ByteValue class="text-reclaim" :bytes="machineStats.reclaim" animate />
-                · {{ machineStats.count }} 个分组 · 近 7 天 {{ machineStats.recent }} 个仓库有提交
-              </p>
+              <div class="flex flex-wrap items-baseline gap-x-4 gap-y-1 pb-0.5 text-[11px] text-muted-foreground">
+                <span class="whitespace-nowrap">
+                  可回收
+                  <ByteValue class="text-reclaim text-xs" :bytes="machineStats.reclaim" animate />
+                </span>
+                <span class="whitespace-nowrap">{{ machineStats.count }} 个分组</span>
+                <span class="whitespace-nowrap">近 7 天 {{ machineStats.recent }} 个仓库有提交</span>
+              </div>
             </div>
             <!-- 账本头线：页头与账目之间一条墨线，全页唯一的重线。合计属于页眉，
                  线以下才是条目；分组视图没有页头也就没有这条线（一页最多一条重线，
@@ -1345,25 +964,29 @@ async function onRescan() {
             :style="{ gridTemplateColumns: gridCols }"
           >
             <button
-              class="min-w-0 text-left transition-colors hover:text-foreground"
-              :aria-label="`按名称排序`"
-              :aria-sort="sortKey === 'name' ? (sortDesc ? 'descending' : 'ascending') : 'none'"
+              class="flex min-w-0 items-center gap-1 text-left transition-colors hover:text-foreground"
+              :class="sortKey === 'name' ? 'text-foreground' : ''"
+              :aria-label="`按名称排序${sortKey === 'name' ? (sortDesc ? '，当前降序' : '，当前升序') : ''}`"
               @click="toggleSort('name')"
             >
-              名称<span v-if="sortKey === 'name'">{{ sortDesc ? " ↓" : " ↑" }}</span>
+              名称
+              <component v-if="sortKey === 'name'" :is="sortDesc ? ArrowDown : ArrowUp" class="size-3 shrink-0" aria-hidden="true" />
             </button>
-            <button
+            <Hint
               v-for="c in colMeta.slice(1)"
               :key="c.key"
-              class="min-w-0 truncate transition-colors hover:text-foreground"
-              :class="c.align"
-              :aria-label="`按${c.label}排序`"
-              :aria-sort="sortKey === c.key ? (sortDesc ? 'descending' : 'ascending') : 'none'"
-              :title="colTitle(c)"
-              @click="toggleSort(c.key)"
+              :text="colTitle(c)"
             >
-              {{ c.label }}<span v-if="sortKey === c.key">{{ sortDesc ? " ↓" : " ↑" }}</span>
-            </button>
+              <button
+                class="flex min-w-0 items-center gap-1 transition-colors hover:text-foreground"
+                :class="[c.align === 'text-right' ? 'justify-end' : '', sortKey === c.key ? 'text-foreground' : '']"
+                :aria-label="`按${c.label}排序${sortKey === c.key ? (sortDesc ? '，当前降序' : '，当前升序') : ''}`"
+                @click="toggleSort(c.key)"
+              >
+                <span class="truncate">{{ c.label }}</span>
+                <component v-if="sortKey === c.key" :is="sortDesc ? ArrowDown : ArrowUp" class="size-3 shrink-0" aria-hidden="true" />
+              </button>
+            </Hint>
           </div>
 
           <!-- 行界 = 账本行线（U15 推翻「行间不画线」）：此前怕两百条线读成网格纸，
@@ -1417,7 +1040,6 @@ async function onRescan() {
                   class="grid w-full min-w-0 items-baseline gap-2 px-3 text-left leading-[18px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   :style="{ gridTemplateColumns: gridCols }"
                   :class="isOverview ? 'py-2.5' : 'py-1'"
-                  :title="rowTitle(row.item)"
                   @click="onRowClick(row.item)"
                   @contextmenu.prevent="openMenu($event, row.item)"
                 >
@@ -1425,16 +1047,34 @@ async function onRescan() {
                        把表格读成仪表盘热力图；账本的比例语义由数字列与总览「占比」列承担。
                        名称与状态同一行：状态是 11px 灰字不是药丸——药丸把单行撑成两行、
                        全列铺满小灰块纹理，是生成式列表 UI 的第一指纹。两段都可截断，
-                       按各自宽度比例分摊挤压，窄窗口下谁都不会把谁顶出去。 -->
+                       按各自宽度比例分摊挤压，窄窗口下谁都不会把谁顶出去。
+                       两段各自的 tooltip 挂在各自那段上，**不挂整行**：行的 tooltip
+                       会与段内的 tooltip 嵌套，pointermove 冒泡上去两条一起排队开，
+                       谁先弹取决于计时器，扫过时就是一次闪烁。 -->
                   <span class="flex min-w-0 items-baseline gap-2">
-                    <span
-                      class="min-w-0 truncate"
-                      :class="isOverview ? 'text-[14px] font-medium' : 'text-[13px]'"
-                    >{{ rowName(row.item) }}</span>
+                    <Hint :text="rowTitle(row.item)">
+                      <span
+                        class="min-w-0 truncate"
+                        :class="isOverview ? 'text-[14px] font-medium' : 'text-[13px]'"
+                      >{{ rowName(row.item) }}</span>
+                    </Hint>
+                    <!-- 标签逐个挂提示：hover 哪个解释哪个，比整段一份说明精确。
+                         分隔点不在提示范围内（它是标点，不是信息）。 -->
                     <span
                       v-if="visibleTags(row.item).length"
-                      class="min-w-0 truncate text-[11px] text-muted-foreground"
-                    >{{ visibleTags(row.item).join(" · ") }}</span>
+                      class="flex max-w-[40%] shrink-0 items-baseline gap-1 overflow-hidden"
+                    >
+                      <template v-for="(t, ti) in visibleTags(row.item)" :key="t">
+                        <span
+                          v-if="ti"
+                          class="shrink-0 text-[11px] text-muted-foreground"
+                          aria-hidden="true"
+                        >·</span>
+                        <Hint :text="tagHint(t)">
+                          <span class="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">{{ t }}</span>
+                        </Hint>
+                      </template>
+                    </span>
                   </span>
 
                   <span
@@ -1485,237 +1125,76 @@ async function onRescan() {
           </div>
 
           <div v-if="!visibleRows.length" class="px-3 py-6">
-            <p class="text-xs text-foreground">无匹配项</p>
-            <button
-              v-if="search || anyFilter"
-              class="mt-1 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
-              @click="((search = ''), clearFilters())"
-            >
-              清除筛选条件
-            </button>
+            <div v-if="reposEmpty" class="max-w-[600px]" :aria-busy="!!repoRootsPending">
+              <h2 class="text-xs font-medium text-foreground">{{ current.error ? "未能完成仓库扫描" : "未发现 Git 仓库" }}</h2>
+              <p v-if="current.error" class="mt-1 text-[11px] text-destructive [overflow-wrap:anywhere]">{{ current.error }}</p>
+              <h3 class="mt-3 text-[11px] text-muted-foreground">{{ current.error ? "当前扫描范围" : "已扫描范围" }}</h3>
+              <ul v-if="current.notes?.length" class="mt-1 space-y-1">
+                <li v-for="note in current.notes" :key="note" class="select-text text-[11px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{{ note }}</li>
+              </ul>
+              <p v-else class="mt-1 text-[11px] text-muted-foreground">当前快照未记录扫描范围，请重扫本组。</p>
+              <p v-if="repoRootsPending === 'loading'" role="status" class="mt-3 text-[11px] text-muted-foreground">正在读取扫描目录…</p>
+              <div v-if="repoRootsError" class="mt-3 text-[11px]">
+                <p role="alert" class="whitespace-pre-line text-destructive [overflow-wrap:anywhere]">{{ repoRootsError }}</p>
+                <Button variant="ghost" size="xs" class="mt-1 text-muted-foreground" :disabled="repoRootsBusy" @click="loadRoots">
+                  <RefreshCw aria-hidden="true" />
+                  重新读取目录
+                </Button>
+              </div>
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <Button variant="outline" size="xs" :disabled="repoRootsBusy || !repoRoots" @click="addRoot">
+                  <FolderPlus aria-hidden="true" />
+                  补充目录
+                </Button>
+                <Button variant="ghost" size="xs" class="text-muted-foreground" @click="router.push('/settings')">管理扫描目录</Button>
+                <span v-if="repoRootsPending === 'adding' || repoRootsPending === 'removing'" role="status" class="text-[11px] text-muted-foreground">正在更新目录…</span>
+              </div>
+            </div>
+            <template v-else>
+              <p class="text-xs text-foreground">无匹配项</p>
+              <button
+                v-if="search || anyFilter"
+                class="mt-1 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                @click="((search = ''), clearFilters())"
+              >
+                清除筛选条件
+              </button>
+            </template>
           </div>
         </template>
         </div>
-      </div>
+      </ScrollArea>
 
       <!-- 检查器：原来四张卡片搬到这里（D5 降级后保留外观与交互部分）。
            收起时不卸载：宽度 252 → 0 让主区跟着收放，内容用 inert 挡键盘，
            避免「瞬间消失」把主区宽度一步跳过去。 -->
-      <aside
+      <ScrollArea
         v-if="current && !isOverview"
-        class="inspector flex shrink-0 flex-col border-l border-border/30"
+        as="aside"
+        id="asset-inspector"
+        aria-label="检查器"
+        class="inspector flex shrink-0 flex-col border-l border-border/60"
         :class="{ closed: !inspectorOpen }"
         :inert="!inspectorOpen"
         :aria-hidden="!inspectorOpen"
       >
-        <!-- 总览不进检查器（台账式首块把合计 / 可回收 / 占比带搬进了主区），
-             这里的数字只会与主区重复；工具栏的检查器开关在总览一并隐藏。 -->
-        <div :key="inspectorKey" class="page-in min-h-0">
-        <template v-if="selectedRow">
-          <p class="min-w-0 break-words text-[13px] font-medium">{{ selectedRow.name }}</p>
-          <p v-if="isLocalPath(selectedRow.path)" class="mt-0.5 break-words font-mono text-[10px] text-muted-foreground">
-            {{ selectedRow.path }}
-          </p>
-
-          <!-- 路径动作条：只对宿主机绝对路径出现。flex-wrap：清理按钮进来后
-               多个 xs 按钮在 228px 内容区里会超宽（S2）。复制路径不在这条上——
-               2026-10-19 按用户要求移除，入口收进行右键菜单一处。 -->
-          <div v-if="isLocalPath(selectedRow.path)" class="mt-2 flex flex-wrap items-center gap-1.5">
-            <Button size="xs" variant="outline" @click="onReveal(selectedRow)">
-              <FolderOpen />
-              {{ revealLabel }}
-            </Button>
-            <Button
-              v-if="canClean(selectedRow)"
-              size="xs"
-              variant="outline"
-              class="text-destructive"
-              @click="askClean(selectedRow)"
-            >
-              <Trash2 />
-              清理
-            </Button>
-            <Button
-              v-if="canCleanArtifacts(selectedRow)"
-              size="xs"
-              variant="outline"
-              class="text-destructive"
-              @click="askCleanArtifacts(selectedRow)"
-            >
-              <Trash2 />
-              清理产物
-            </Button>
-          </div>
-
-          <!-- 标签与表格行同一形态：灰字不是药丸（U15），检查器里也不留一处例外 -->
-          <p v-if="selectedRow.tags.length" class="mt-2 text-[11px] text-muted-foreground">
-            {{ selectedRow.tags.join(" · ") }}
-          </p>
-
-          <div class="mt-3 text-[11px] font-semibold text-muted-foreground">指标</div>
-          <dl class="mt-1 space-y-1">
-            <template v-for="f in current.fields.slice(0, 3)" :key="f.key">
-              <div class="flex items-baseline justify-between gap-2">
-                <dt class="text-xs text-muted-foreground">{{ f.label }}</dt>
-                <!-- 与表格同一口径：可回收量与体积恒等的行（splitReclaim 为 false），
-                     体积在指标区也染绿，不再单列一行「可回收」——那是同一个数印第二遍。
-                     splitReclaim 的组保留独立的可回收行。 -->
-                <dd
-                  class="text-xs tabular-nums"
-                  :class="f.key === 'size' && !splitReclaim && reclaimableOf(selectedRow) > 0 ? 'text-reclaim' : ''"
-                >
-                  {{ cell(selectedRow, f.key, f.temporal) }}
-                </dd>
-              </div>
-            </template>
-            <div v-if="splitReclaim && reclaimableOf(selectedRow) > 0" class="flex items-baseline justify-between gap-2">
-              <dt class="text-xs text-muted-foreground">可回收</dt>
-              <dd class="text-xs text-reclaim">
-                <ByteValue :bytes="reclaimableOf(selectedRow)" />
-              </dd>
-            </div>
-            <div v-if="artifactBytes(selectedRow) > 0" class="flex items-baseline justify-between gap-2">
-              <dt class="text-xs text-muted-foreground">构建产物</dt>
-              <dd class="text-xs"><ByteValue :bytes="artifactBytes(selectedRow)" /></dd>
-            </div>
-          </dl>
-
-          <template v-if="selectedRow.detail">
-            <div class="mt-4 text-[11px] font-semibold text-muted-foreground">明细</div>
-            <dl v-if="detailEntries.length" class="mt-1 space-y-1">
-              <!-- Rust 侧给 detail 的键加了 `N. ` 前缀是为了压住 HashMap 的不确定顺序，
-                   这个编号是给序列化用的，不该出现在界面上 -->
-              <!-- items-baseline 必须有：12px 汉字标签与 11px 等宽值在 items-stretch 下
-                   行盒起点差 1px，基线就错开约 1.5px——「构建产物」「最后提交」这些
-                   标签会看着比值的首行矮半口气。指标区一直是 baseline，这里之前漏了。 -->
-              <div v-for="[k, v] in detailEntries" :key="k" class="flex items-baseline gap-2">
-                <!-- 标签跟值同为 11px：这里的中文标签配的是 11px 等宽值，12px 汉字的
-                     字面占满 em 框、11px 拉丁只占 x-height，基线一对齐汉字就往下沉 1px
-                     （实测「最后提交」比 `feat(` 低 4 个物理像素）。同字号后墨迹上下沿
-                     完全重合。指标区两侧都是 12px，所以那边保持 text-xs。 -->
-                <dt class="w-16 shrink-0 truncate text-[11px] text-muted-foreground" :title="detailLabel(k)">
-                  {{ detailLabel(k) }}
-                </dt>
-                <!-- break-words 而不是 break-all：后者会在单词中间断行
-                     （"dist, node_modules, target" 断成 "targe t"），前者优先在空格断，
-                     无空格的长路径 / URL 仍能在容器边缘换行。
-                     whitespace-pre-line 留给还有多行值的键（产物明细已挪到下面独立子表） -->
-                <dd class="min-w-0 whitespace-pre-line break-words font-mono text-[11px] text-foreground">{{ v }}</dd>
-              </div>
-            </dl>
-
-            <!-- 产物明细：占满整条检查器宽度的子表，不再走「64px label + 一段等宽文本」。
-                 那条形态在 228px 里只剩 156px 给值，`apps/desktop/.output/server/node_modules
-                 · 64.1 MB` 必然折行、体积与条目分家，break-words 还会把 node_modules 劈成
-                 "node_m / odules"。改成一条一行：左路径（父段灰、末段黑、父段优先截断），
-                 右体积右对齐——纵向一眼能比大小。 -->
-            <template v-if="artifactRows.length">
-              <!-- 可点提示只在标题行给一个图标，行内不再各挂一个：228px 里每行多 16px，
-                   父路径就从 90px 掉到 68px（12 个字符），`apps/desktop/.output/server/
-                   node_modules` 与 `apps/desktop/node_modules` 会在行内截成同一个串。
-                   标题这一个图标 + 整行 hover 淡底，代价为零。 -->
-              <div class="mt-4 flex items-center gap-1.5">
-                <span class="text-[11px] font-semibold text-muted-foreground">产物明细</span>
-                <FolderOpen
-                  class="size-3 shrink-0 text-muted-foreground"
-                  :title="`${revealLabel}：点任意一行`"
-                />
-              </div>
-              <!-- text-[11px] 必须落在这里：dl 的 11px 是逐元素给的，管不到这个 ul。
-                   右侧体积 span 是块级 flex 项，缺了它就继承容器 16px 字号当 strut，
-                   行盒比 11px 文本高出约 2.5px；items-baseline 把多出的高度全顶在上方，
-                   文字在悬停高亮条里「坐底」。 -->
-              <ul class="mt-1 text-[11px]">
-                <li v-for="(r, i) in artifactRows" :key="i" class="leading-[18px]">
-                  <!-- 整行是按钮：点一下在访达 / 资源管理器里定位这个产物目录 -->
-                  <button
-                    v-if="r.kind === 'row'"
-                    type="button"
-                    class="flex w-full items-baseline gap-2 rounded-sm text-left px-1 transition-colors duration-[90ms] hover:bg-[var(--ink-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    :title="`${revealLabel} · ${r.rel}`"
-                    @click="revealAt(artifactPath(r.rel))"
-                  >
-                    <span class="flex min-w-0 flex-1 items-baseline font-mono text-[11px]">
-                      <!-- mr-0.5：截断后的省略号会与末段贴成一个词（".output/serv…node_modules"）。
-                           margin 而不是 padding——父路径为空时整段不渲染，末段才不会平白左移 -->
-                      <span v-if="r.dir" class="mr-0.5 min-w-0 truncate text-muted-foreground">{{ r.dir }}</span>
-                      <span class="shrink-0 text-foreground">{{ r.base }}</span>
-                    </span>
-                    <span class="shrink-0 whitespace-nowrap tabular-nums">
-                      <span class="text-xs font-medium">{{ r.num }}</span>
-                      <span class="ml-0.5 text-[11px] font-normal">{{ r.unit }}</span>
-                    </span>
-                  </button>
-                  <span v-else class="block text-[11px] text-muted-foreground">{{ r.text }}</span>
-                </li>
-              </ul>
-            </template>
-          </template>
-        </template>
-
-        <template v-else>
-          <div class="text-[11px] font-semibold text-muted-foreground">{{ current.label }}</div>
-          <!-- Rust 侧 summary 本身就是「N 项 · 合计 X · N 项可回收 · 共 Y」，
-               与此前它上面的 条目/合计/可回收 三行 dl 逐字重复——留一行文案，删三行 dl。
-               整组数字的另一份在状态栏；筛选生效时状态栏是筛后口径，这里是全组口径。 -->
-          <p v-if="current.summary" class="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-            {{ current.summary }}
-          </p>
-          <!-- notes 是口径事实（如「嵌套仓库体积已排除」），不是说明书：不配「说明」标题、
-               不配 ⓘ 图标，就是几行灰字（U15）。「选中一行看明细」这类占位指令删掉——
-               原生 app 不会告诉你怎么用它自己。 -->
-          <p
-            v-for="(n, i) in current.notes ?? []"
-            :key="i"
-            class="mt-2 text-[11px] leading-relaxed text-muted-foreground"
-          >
-            {{ n }}
-          </p>
-          <!-- 清理规则默认收起。这三条讲的是「本工具怎么判可清理」，常驻等于把 README 塞进
-               界面：占掉检查器三分之一屏，且每次打开都读一遍。**一字未改，只从常驻改成折叠**
-               ——第一次真要清理的人会点开，天天用的人不必再看。措辞改动是另一把刀的事。 -->
-          <template v-if="current?.supports_clean">
-            <button
-              class="mt-1.5 flex items-center gap-1 rounded text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              :aria-expanded="rulesOpen"
-              @click="rulesOpen = !rulesOpen"
-            >
-              <ChevronRight
-                class="size-3 shrink-0 transition-transform"
-                :class="rulesOpen ? 'rotate-90' : ''"
-              />
-              清理规则
-            </button>
-            <div class="rules" :class="{ open: rulesOpen }" :aria-hidden="!rulesOpen">
-              <div>
-                <ul class="mt-1 space-y-1.5 text-[11px] leading-relaxed text-muted-foreground">
-                  <li>
-                    「可清理」行可在检查器里发起清理（移入废纸篓）；带构建产物的仓库可以只清产物（node_modules
-                    / target 等，源码保留）。
-                  </li>
-                  <li>
-                    工具链缓存里那些有官方清理命令的行不标「可清理」——命令写在明细里，请自己运行，它比搬走整个目录精确。
-                  </li>
-                  <li>
-                    编辑器与 AI
-                    工具按「工具 × 类别」清日志 / 会话 / 缓存；会话含完整对话记录，删除后不会自动重建。
-                  </li>
-                </ul>
-              </div>
-            </div>
-          </template>
-          <p v-else-if="reclaimTotal > 0" class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-            本组只读：账面可回收不等于有删除入口。
-          </p>
-        </template>
-        </div>
-      </aside>
+        <InspectorPanel
+          v-model:rules-open="rulesOpen"
+          :group="current"
+          :selected-row="selectedRow"
+          :split-reclaim="splitReclaim"
+          @reveal="onReveal"
+          @reveal-at="revealAt"
+          @ask-clean="askClean"
+          @ask-clean-artifacts="askCleanArtifacts"
+        />
+      </ScrollArea>
     </div>
 
     <!-- 状态栏：当前视图的条目数 / 合计 / 可回收 -->
     <div
       v-if="current"
-      class="flex h-7 shrink-0 items-center justify-between gap-2 border-t border-border/40 px-3 text-[11px] text-muted-foreground"
+      class="flex h-10 shrink-0 items-center justify-between gap-2 border-t border-border/40 px-3 text-[11px] text-muted-foreground"
     >
       <!-- 合计是本屏最该看清的两个数之一（另一个在检查器主角位），近黑；
            整条状态栏底色是 muted，这里不显式抬到 foreground 的话会跟着一起灰 -->
@@ -1726,23 +1205,30 @@ async function onRescan() {
         <!-- 数据新鲜度挪到状态栏常驻：此前只挂在「重扫」按钮的 title 上，
              不 hover 就永远不知道眼前这份快照是什么时候的。单组重扫后各分组
              时间不同，这里按当前视图取对应的扫描时间（总览取最早的组）。 -->
-        <span
+        <!-- 状态栏在窗口底缘，朝上展开的 tooltip 不会跑出去。
+             v-if 挂在 Hint 上而不是里面的 span：asChild 的触发器要求插槽里真有
+             一个元素，条件为假时插槽是空的。 -->
+        <Hint
           v-if="viewSavedAt"
-          :key="viewSavedAt"
-          class="updated tabular-nums"
-          :class="stale ? 'text-foreground' : ''"
-          :title="stale ? '已超过一天，建议重扫' : '本视图数据的扫描时间'"
+          :text="stale ? '已超过一天，建议重扫' : '本视图数据的扫描时间'"
         >
-          数据更新于 {{ formatAgo(viewSavedAt) }}
-        </span>
-        <span
+          <span
+            :key="viewSavedAt"
+            class="updated tabular-nums"
+            :class="stale ? 'text-foreground' : ''"
+          >
+            数据更新于 {{ formatAgo(viewSavedAt) }}
+          </span>
+        </Hint>
+        <Hint
           v-if="statusReclaim > 0"
-          class="tabular-nums"
-          title="可回收为估算值：含共享硬链接的目录（如 Rust 的 target/）可能偏高"
+          text="可回收为估算值：含共享硬链接的目录（如 Rust 的 target/）可能偏高"
         >
-          可回收
-          <ByteValue class="text-reclaim" :bytes="statusReclaim" />
-        </span>
+          <span class="tabular-nums">
+            可回收
+            <ByteValue class="text-reclaim" :bytes="statusReclaim" />
+          </span>
+        </Hint>
         <!-- 「设置」入口 2026-10-19 挪回侧栏（App.vue 底部，与分组行同一套选中规则）。
              此前注释说它「不是资产分组、不该挤在侧栏里」——这条考虑到头了分组列表的一侧，
              漏了「应用级入口应该恒定可达」；状态栏属于当前视图，换个分组就换一回，
@@ -1750,226 +1236,28 @@ async function onRescan() {
       </div>
     </div>
 
-    <!-- 行右键菜单。只有两项，自己画一个比拉一个菜单库划算。
-         位置钳制在视口内；点别处 / 滚动 / Esc / 改窗口大小都收（见 script 的监听）。 -->
-    <div
-      v-if="menu"
-      data-row-menu
-      role="menu"
-      class="ctx-menu menu-in fixed z-50 min-w-44 rounded-md border border-border bg-card py-1 shadow-md"
-      :style="menuStyle"
-    >
-      <button
-        role="menuitem"
-        class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-muted"
-        @click="onReveal(menu.item)"
-      >
-        <FolderOpen class="size-3.5 shrink-0 text-muted-foreground" />
-        {{ revealLabel }}
-      </button>
-      <button
-        role="menuitem"
-        class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-muted"
-        @click="onCopyPath(menu.item)"
-      >
-        <Copy class="size-3.5 shrink-0 text-muted-foreground" />
-        复制路径
-      </button>
-    </div>
+    <!-- 行右键菜单（RowContextMenu）：位置钳制在组件内；点别处 / 滚动 / Esc /
+         改窗口大小都收（本文件的 window 监听）。 -->
+    <RowContextMenu :menu="menu" @reveal="onReveal" @copy="onCopyPath" />
 
-    <!-- 清理确认弹窗（S2 / D1 拍板选 A）。破坏性操作必须显式确认，且把三件事
-         写在明处：删什么（整个仓库，含源码与 .git）、删多少（体积）、去哪
-         （废纸篓，可恢复）。Esc / 点遮罩 / 取消都收；确认才发起 invoke。 -->
-    <div v-if="cleanTarget" class="fixed inset-0 z-50 flex items-center justify-center">
-      <div class="absolute inset-0 bg-black/40" @click="cleanTarget = null" />
-      <div
-        ref="cleanDialog"
-        role="dialog"
-        aria-modal="true"
-        class="relative w-[420px] rounded-lg border border-border bg-card p-4 shadow-lg"
-      >
-        <p class="text-[13px] font-medium">移入废纸篓</p>
-        <p class="mt-2 text-xs leading-relaxed text-muted-foreground">
-          <!-- 三组性质不同，不能共用一句话（S3 / B1）：删仓库丢源码、删缓存花重下的时间、
-               删 AI 工具数据里的会话丢历史 -->
-          <template v-if="cleanKind === 'repo'">
-            将把整个仓库目录——<span class="text-foreground">连同源码与 .git 历史</span
-            >——移入废纸篓，之后可以从废纸篓恢复。
-          </template>
-          <template v-else-if="cleanKind === 'ai'">
-            将把「{{ cleanTarget.name }}」这一行下的
-            <span class="text-foreground">{{ aiKindLabel(cleanTarget) }}</span>
-            条目移入废纸篓，之后可以从废纸篓恢复。
-            <template v-if="aiKindLabel(cleanTarget) === '会话'">
-              <span class="text-foreground">会话含完整对话记录与代码片段，删除后不会自动重建。</span>
-              日志与缓存会在下次运行时重新生成。
-            </template>
-            <template v-else>日志与缓存会在下次运行时重新生成，功能不受影响。</template>
-          </template>
-          <template v-else>
-            将把整个缓存目录移入废纸篓，之后可以从废纸篓恢复。
-            <span class="text-foreground">下次用到时要重新下载或重建</span>，功能不受影响。
-          </template>
-        </p>
-        <dl class="mt-3 space-y-1 rounded-md bg-muted/50 p-2 text-xs">
-          <div class="flex items-baseline justify-between gap-2">
-            <dt class="shrink-0 text-muted-foreground">
-              {{ cleanKind === "repo" ? "仓库" : cleanKind === "ai" ? "工具" : "缓存" }}
-            </dt>
-            <dd class="min-w-0 truncate font-medium">{{ cleanTarget.name }}</dd>
-          </div>
-          <div v-if="cleanKind === 'ai'" class="flex items-baseline justify-between gap-2">
-            <dt class="shrink-0 text-muted-foreground">类别</dt>
-            <dd class="min-w-0 truncate font-medium">{{ aiKindLabel(cleanTarget) }}</dd>
-          </div>
-          <div class="flex items-baseline justify-between gap-2">
-            <dt class="shrink-0 text-muted-foreground">路径</dt>
-            <dd class="min-w-0 truncate font-mono" :title="cleanTarget.path">
-              {{ cleanTarget.path }}
-            </dd>
-          </div>
-          <div class="flex items-baseline justify-between gap-2">
-            <dt class="shrink-0 text-muted-foreground">体积</dt>
-            <dd><ByteValue :bytes="reclaimableOf(cleanTarget)" /></dd>
-          </div>
-        </dl>
-        <p class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-          <template v-if="cleanKind === 'repo'">
-            有未推送提交或未提交改动的仓库会被拒绝——点击与扫描之间状态可能变了，服务端会逐项复核。
-          </template>
-          <template v-else-if="cleanKind === 'ai'">
-            服务端会核对工具仍在扫描白名单内，并按点击那一刻的文件名重新分类；只有仍属于该类别的一级条目会被清理。会话删除后只能从废纸篓找回。
-          </template>
-          <template v-else>
-            <template v-if="cleanNote(cleanTarget)">{{ cleanNote(cleanTarget) }}</template>
-            <template v-else>
-              正在进行的构建或下载建议等完成后再清理。
-            </template>
-            服务端会复核这条仍在可清理白名单内。
-          </template>
-          <br />
-          <span class="opacity-70">可回收为估算值：含共享硬链接的目录（如 Rust 的 target/）可能偏高。</span>
-        </p>
-        <div class="mt-4 flex justify-end gap-2">
-          <Button data-dialog-cancel size="xs" variant="outline" @click="cleanTarget = null">取消</Button>
-          <Button size="xs" variant="destructive" @click="confirmClean">确认移入废纸篓</Button>
-        </div>
-      </div>
-    </div>
+    <!-- 清理确认弹窗（S2 / D1 拍板选 A）：文案与复核提示都在 CleanDialog 里。
+         Esc / 点遮罩 / 取消都收（emit cancel）；确认 emit confirm——invoke 与
+         applyCleanResult 在本组件，与产物弹窗共用。 -->
+    <CleanDialog
+      ref="cleanDialog"
+      :target="cleanTarget"
+      :group-id="current?.id ?? null"
+      @confirm="confirmClean"
+      @cancel="cleanTarget = null"
+    />
 
-    <!-- 清理构建产物弹窗（P2）。与整仓删除的弹窗刻意分开：范围、复核方式、
-         后果都不同。要点写在明处：删什么（白名单产物目录）、保什么（源码
-         与 .git）、复核是什么（服务端点击那一刻按白名单现找，不信任前端路径）。 -->
-    <div v-if="artifactTarget" class="fixed inset-0 z-50 flex items-center justify-center">
-      <div class="absolute inset-0 bg-black/40" @click="artifactTarget = null" />
-      <div
-        ref="artifactDialog"
-        role="dialog"
-        aria-modal="true"
-        class="relative w-[420px] rounded-lg border border-border bg-card p-4 shadow-lg"
-      >
-        <p class="text-[13px] font-medium">清理构建产物</p>
-        <p class="mt-2 text-xs leading-relaxed text-muted-foreground">
-          将把勾选的 <span class="text-foreground">{{ artifactPicked.size }} 个</span>构建产物目录移入废纸篓。
-          <span class="text-foreground">源码与 .git 不受影响</span
-          >，重新构建或安装依赖时会再次生成。
-        </p>
-        <dl class="mt-3 space-y-1 rounded-md bg-muted/50 p-2 text-xs">
-          <div class="flex items-baseline justify-between gap-2">
-            <dt class="shrink-0 text-muted-foreground">仓库</dt>
-            <dd class="min-w-0 truncate font-medium">{{ artifactTarget.name }}</dd>
-          </div>
-          <div class="flex items-baseline justify-between gap-2">
-            <dt class="shrink-0 text-muted-foreground">路径</dt>
-            <dd class="min-w-0 truncate font-mono" :title="artifactTarget.path">
-              {{ artifactTarget.path }}
-            </dd>
-          </div>
-        </dl>
-
-        <!-- 逐条勾选（与检查器「产物明细」同一份数据、同一套排印：父路径灰、
-             末段黑、体积右对齐）。默认全选；取消勾选的目录本次不动。行数封顶
-             与 Rust 侧 MAX_DETAIL_ROWS 一致，超出的走「…其余 N 个略」灰字。 -->
-        <div class="mt-3">
-          <!-- 表头勾选框兼作列头，钉在行勾选列正上方：pl-2.5 = 列表盒 p-1.5 +
-               行 px-1，差一像素就读不成一列。半选态表意，可见文案让位给节标题；
-               「全选」语义走 title / aria-label，别把字样加回来——列头勾选框
-               自身就是表格的通用范式。 -->
-          <label
-            class="flex items-center gap-1.5 pl-2.5 text-[11px] text-muted-foreground"
-            title="全选"
-          >
-            <Checkbox
-              aria-label="全选"
-              :model-value="artifactAllPicked ? true : artifactSomePicked ? 'indeterminate' : false"
-              @update:model-value="(v) => toggleAllArtifacts(v === true)"
-            />
-            <span class="font-semibold">产物目录</span>
-          </label>
-          <!-- text-[11px] 与检查器子表同理：不给的话右侧体积 span 以继承的 16px 当 strut，
-               行盒撑到约 19.3px；items-center 下虽对称，但行高偏离 18px 设计密度。 -->
-          <ul class="mt-1 max-h-[188px] overflow-y-auto rounded-md bg-muted/50 p-1.5 text-[11px]">
-            <li v-for="(r, i) in artifactDialogRows" :key="i" class="leading-[18px]">
-              <!-- items-center 不用 baseline：reka-ui 的框是 button，勾存在与否会改变
-                   它的合成基线（mark 在 = 末段底边，不在 = 自身底边），勾选态会跳 3.25px；
-                   center 与 mark 脱钩，且不依赖浏览器对 button 字体的基线合成，跨平台一致。
-                   12px 盒子在 18px 行高里 flex 居中即对齐，别再补 translate——那是旧版
-                   原生 input（items-baseline + y-1px）的认可位，搬过来会把框抬高 1px。 -->
-              <label
-                v-if="r.kind === 'row'"
-                class="flex items-center gap-2 rounded-sm px-1 hover:bg-[var(--ink-hover)]"
-              >
-                <Checkbox
-                  :model-value="artifactPicked.has(r.rel)"
-                  @update:model-value="(v) => toggleArtifact(r.rel, v === true)"
-                />
-                <span class="flex min-w-0 flex-1 items-baseline font-mono text-[11px]">
-                  <span v-if="r.dir" class="mr-0.5 min-w-0 truncate text-muted-foreground">{{ r.dir }}</span>
-                  <!-- 没勾选的行整行退灰（末段也退）：本次不清的目录该往后退，
-                       但只退到 muted——父路径本来就是这档灰，不再往上加透明度，
-                       免得 11px 小字的对比度掉到 4.5:1 以下 -->
-                  <span
-                    class="shrink-0"
-                    :class="artifactPicked.has(r.rel) ? 'text-foreground' : 'text-muted-foreground'"
-                    >{{ r.base }}</span
-                  >
-                </span>
-                <span
-                  class="shrink-0 whitespace-nowrap tabular-nums"
-                  :class="artifactPicked.has(r.rel) ? '' : 'text-muted-foreground'"
-                >
-                  <span class="text-[11px] font-medium">{{ r.num }}</span>
-                  <span class="ml-0.5 text-[11px] font-normal">{{ r.unit }}</span>
-                </span>
-              </label>
-              <span v-else class="px-1 text-[11px] text-muted-foreground">{{ r.text }}</span>
-            </li>
-          </ul>
-        </div>
-
-        <p class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-          不检查未推送提交或未提交改动——清产物不碰源码。服务端会按白名单重新找出产物目录，以点击那一刻为准；藏有 Git 仓库的产物目录会被拒绝。
-          <br />
-          <span class="opacity-70">已选为估算值：含共享硬链接的目录可能偏高。</span>
-        </p>
-        <div class="mt-4 flex items-center justify-between gap-2">
-          <span class="text-[11px] tabular-nums text-muted-foreground">
-            已选 {{ artifactPicked.size }} 个 · 约
-            <span class="text-foreground">{{ formatBytes(artifactPickedBytes) }}</span>
-          </span>
-          <div class="flex gap-2">
-            <Button data-dialog-cancel size="xs" variant="outline" @click="artifactTarget = null">取消</Button>
-            <Button
-              size="xs"
-              variant="destructive"
-              :disabled="artifactPicked.size === 0"
-              @click="confirmCleanArtifacts"
-            >
-              确认移入废纸篓
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- 清理构建产物弹窗（P2）：勾选集合是弹窗组件的内部状态（打开即全选），
+         确认时把勾选的相对路径随 emit 展开交上来。 -->
+    <ArtifactCleanDialog
+      ref="artifactDialog"
+      :target="artifactTarget"
+      @confirm="confirmCleanArtifacts"
+      @cancel="artifactTarget = null"
+    />
   </div>
 </template>

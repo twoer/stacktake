@@ -46,6 +46,11 @@ docs/ui-deai-plan.md
 docs/ui-review-2026-10-18.md
 # 代码审查报告：同类过程稿，修复结论落库后只剩过程价值
 docs/code-review-*.md
+# 重构计划：过程稿，结论落库后只剩过程价值
+docs/plans/
+
+# 截图基线台（mock IPC harness）的构建产物：本地验证设施，不随仓库分发
+dist-shot/
 
 # logo 的过程产物：AI 生成的候选图、备份图标、候选尺寸图与候选方案
 # （成品在 logo/final 与 src-tauri/icons，生成脚本 logo/gen.mjs 保留以便复现）
