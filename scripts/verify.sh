@@ -5,7 +5,7 @@
 # 改了扫描逻辑才跑。哪层挂了就先修哪层，别带着红往下走。
 #
 #   scripts/verify.sh            外环：内环 + cargo test + 前端 build
-#   scripts/verify.sh --quick    内环：fmt + clippy + tsc + 契约/文档门禁（几秒到几十秒）
+#   scripts/verify.sh --quick    内环：fmt + clippy + tsc + 前端单测 + 契约/文档门禁（几秒到几十秒）
 #   scripts/verify.sh --full     外环 + 全量扫描契约评估（约 45 秒，扫真实数据）
 #
 # 退出码：0 全绿；非零表示有层没过。CI 跑的是「外环」那一套（见 .github/workflows）。
@@ -90,6 +90,7 @@ summary() {
   printf '  rust fmt      → cd src-tauri && cargo fmt --all\n'
   printf '  rust clippy   → cd src-tauri && cargo clippy --all-targets -- -D warnings，看首条警告的 --> 定位\n'
   printf '  前端类型检查   → npx vue-tsc --noEmit（结构变更先同步 src/lib/types.ts）\n'
+  printf '  前端单测     → npm run test:unit（vitest，用例在 src/lib/*.test.ts）\n'
   printf '  rust 测试     → cd src-tauri && cargo test；只跑某组用 cargo test <关键字>\n'
   printf '  前端构建      → npm run build\n'
   printf '  快照契约评估  → node scripts/check-snapshot-contract.mjs <snapshot.json>\n'
@@ -116,6 +117,7 @@ rust_test() {
   fi
 }
 fe_type()   { (cd "$ROOT" && npx --no-install vue-tsc --noEmit); }
+fe_unit()   { (cd "$ROOT" && npm run test:unit); }
 fe_build()  { (cd "$ROOT" && npm run build); }
 contract_selftest() { node "$ROOT/scripts/check-snapshot-contract.mjs" --self-test; }
 docs_gate() {
@@ -142,6 +144,8 @@ printf '%sStacktake verify [%s]%s\n' "$D" "$MODE" "$N"
 run "rust fmt"     rust_fmt  || { summary; exit 1; }
 run "rust clippy"  rust_lint || { summary; exit 1; }
 run "前端类型检查"  fe_type   || { summary; exit 1; }
+# 逻辑层单测（D16 拍板 A）：判据类逻辑错（canClean、筛选计数、分节契约）vue-tsc 抓不住，这层补那个缺口
+run "前端单测"     fe_unit   || { summary; exit 1; }
 # 校验器自己挂了比没有校验器更危险，所以自检留在内环；文档门禁同理
 run "契约校验器自检" contract_selftest || { summary; exit 1; }
 run "文档门禁" docs_gate || { summary; exit 1; }

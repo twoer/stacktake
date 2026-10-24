@@ -89,6 +89,6 @@ npm install
 npm run tauri dev
 ```
 
-验证分三档，改什么就跑什么，红不往下走：`npm run verify:quick`（内环：fmt + clippy + 类型检查 + 文档门禁，秒级，改完就跑）→ `npm run verify`（外环：内环 + 测试 + 构建，提交前）→ `npm run verify:full`（评估档：外环 + 全量扫描契约校验）。导出扫描结果为 JSON 供人工核对：`cd src-tauri && cargo run --example dump`；跑测试（只读本机真实数据，不做任何写入）：`cd src-tauri && cargo test`。
+验证分三档，改什么就跑什么，红不往下走：`npm run verify:quick`（内环：fmt + clippy + 类型检查 + 前端单测 + 文档门禁，秒级，改完就跑）→ `npm run verify`（外环：内环 + 测试 + 构建，提交前）→ `npm run verify:full`（评估档：外环 + 全量扫描契约校验）。导出扫描结果为 JSON 供人工核对：`cd src-tauri && cargo run --example dump`；跑测试（只读本机真实数据，不做任何写入）：`cd src-tauri && cargo test`。
 
 Rust 1.93 / edition 2024 / Tauri 2 / Vue 3 / Tailwind v4；`src-tauri/.cargo/config.toml` 的 rsproxy 镜像源必须提交（国内直连 crates.io 会超时）。数据契约、扫描器注册方式与前端约束见 [AGENTS.md](./AGENTS.md)。

@@ -68,7 +68,7 @@ Scanner trait → AssetGroup → scan-cache.json → tauri command → Vue 表�
 - **账面与删除判据必须逐条对齐**：标了可清理的，不许是点下去会被拒的。repos 查外部 git 状态（会变），toolchain / ai_tools 查白名单与类别（静态 + 点击时复核）——但**「点得动才删得了」同样不该由前端说了算**：`clean_cache` / `clean_ai` **不信任前端传来的 id**，回到白名单 / 当前目录重查一遍，不在白名单或不可清理一律拒。`repos_clean_candidate_mirrors_deletion_judgment` 守 repos 半边，`toolchain_cleanable_rows_all_have_a_deletion_path` 与 `ai_tools_cleanable_rows_all_have_a_deletion_path` 守另两组。
 - **`Item.id` 三组形态不同**：repos 是裸路径、toolchain 是 `toolchain:` 前缀、ai_tools 是 `ai:<类别键>:<工具根路径>`（类别键 ASCII，路径在第二个冒号之后，Windows 盘符不受影响）。`parse_cache_id` 去完前缀是空串必须拒——`PathBuf::from("")` 在文件系统语义上等于当前工作目录（这条写用例时真红过）。
 - **执行清理必须人显式发起**：属暂停条件里的破坏性操作，门禁只验代码与确认流，**绝不真删**——测试不覆盖 `trash::delete` 成功路径（只验拒绝路径，真删留给真人）。`@{u}...HEAD` 的 `--left-right` 两列曾赋反（落后当未推送、未推送放行），已修并由 `repos_scan_reports_unpushed_direction_correctly` 钉住方向——**方向反了比不判更危险**。推送状态**核查不出**（没配 upstream、detached HEAD、git 命令失败）按「可能有未推送」一票否决（fail-closed，`repos::Push` 三态），stash 非空同样否决——`status --porcelain` 看不见 stash，整仓删除会连它一起没；git 调用本身不许写仓库（`GIT_OPTIONAL_LOCKS`，`repos_git_calls_never_write_index` 守着）。
-- **前端无自动化行为测试**：只有 `vue-tsc` + 构建 + 代码审查。`canClean` 判据这类逻辑错 vue-tsc 抓不到。
+- **前端测试分两层（D16 拍板 A，2026-10-24）**：逻辑层有 vitest 单测，接在内环「前端单测」层——`canClean` / 筛选计数 / 分节契约这类判据错 vue-tsc 抓不住，用例在 `src/lib/*.test.ts`，改 `lib/` 纯函数先用例随迁；组件挂载与交互层仍只有 `vue-tsc` + 构建 + 代码审查（B 方案未做），**别把「有单测了」误读成「交互层有兜底」**。
 
 ### 5. AI 工具目录只读文件名，不读任何文件内容
 
@@ -129,7 +129,7 @@ G3 起 toolchain 组里有版本管理器（nvm / fnm / volta / pyenv / conda / 
 
 | 档位 | 命令 | 内容 | 耗时 |
 |---|---|---|---|
-| 内环 | `npm run verify:quick` | rustfmt + clippy（`-D warnings`）+ vue-tsc + 契约校验器自检 + 文档门禁 | 约 10 秒 |
+| 内环 | `npm run verify:quick` | rustfmt + clippy（`-D warnings`）+ vue-tsc + 前端单测（vitest 逻辑层）+ 契约校验器自检 + 文档门禁 | 约 10 秒 |
 | 外环 | `npm run verify` | 内环 + 测试（有 nextest 用 nextest，否则 `cargo test`）+ `vite build` | 约 20 秒 |
 | 评估 | `npm run verify:full` | 外环 + 全量扫描 + 快照契约校验 | 约 45 秒 |
 
