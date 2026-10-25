@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { AssetGroup, Item } from "@/lib/types";
 import {
+  batchCleanRows,
+  batchReclaimOf,
   canCleanArtifactsItem,
   canCleanItem,
   cleanKindOf,
   isBlockerTag,
   orderedTags,
+  pruneSelection,
+  supportsBatchClean,
   tagHint,
 } from "@/lib/assets";
 
@@ -53,6 +57,44 @@ describe("canCleanItem", () => {
   it("非宿主机路径不给——docker / 总览行守卫", () => {
     const virtual = item({ cleanable: true, path: "docker://postgres:16" });
     expect(canCleanItem(group({ supports_clean: true }), virtual)).toBe(false);
+  });
+});
+
+describe("批量清理范围与选择", () => {
+  const toolchain = group({ id: "toolchain", supports_clean: true });
+  const cleanable = item({ id: "toolchain:/a", path: "/tmp/a", cleanable: true, reclaimable: 1024 });
+  const officialCmd = item({ id: "toolchain:/b", path: "/tmp/b", cleanable: false, reclaimable: 2048 });
+
+  it("只开 toolchain / ai_tools；repos 即使接了删除也不给多选", () => {
+    expect(supportsBatchClean(toolchain)).toBe(true);
+    expect(supportsBatchClean(group({ id: "ai_tools", supports_clean: true }))).toBe(true);
+    expect(supportsBatchClean(group({ id: "repos", supports_clean: true }))).toBe(false);
+    expect(supportsBatchClean(group({ id: "toolchain" }))).toBe(false);
+    expect(supportsBatchClean(null)).toBe(false);
+  });
+
+  it("可勾选行 = 单条清理判据，官方命令行与虚拟路径都排除", () => {
+    const virtual = item({ id: "x", path: "docker://x", cleanable: true });
+    const rows = batchCleanRows(toolchain, [cleanable, officialCmd, virtual]);
+    expect(rows.map((it) => it.id)).toEqual(["toolchain:/a"]);
+  });
+
+  it("repos 不返回任何可勾选行（范围关着）", () => {
+    const repos = group({ id: "repos", supports_clean: true });
+    expect(batchCleanRows(repos, [{ ...cleanable, id: "/tmp/repo-a" }])).toEqual([]);
+  });
+
+  it("合计只算选中且仍可清理的条目", () => {
+    const selected = new Set(["toolchain:/a", "toolchain:/b", "toolchain:/gone"]);
+    expect(batchReclaimOf(toolchain, [cleanable, officialCmd], selected)).toBe(1024);
+  });
+
+  it("裁剪丢掉被筛掉/已消失的 id；集合没变时返回原引用", () => {
+    const all = new Set(["a", "b"]);
+    const pruned = pruneSelection(all, new Set(["a"]));
+    expect([...pruned]).toEqual(["a"]);
+    expect(pruneSelection(all, new Set(["a", "b"]))).toBe(all);
+    expect(pruneSelection(all, new Set())).toEqual(new Set());
   });
 });
 

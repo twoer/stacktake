@@ -6,7 +6,7 @@
  * 是数据形状的函数，不是某个组件的私事，放 lib 让两边 import 同一份。
  */
 import type { ArtifactEntry, AssetGroup, Item } from "@/lib/types";
-import { artifactBytes, formatMetric, formatMetricBytes } from "@/lib/types";
+import { artifactBytes, formatMetric, formatMetricBytes, reclaimableOf } from "@/lib/types";
 import { isLocalPath } from "@/lib/path";
 
 export function cell(it: Item, key: string, temporal?: boolean): string {
@@ -97,6 +97,63 @@ export function canCleanItem(group: AssetGroup | null, item: Item): boolean {
 }
 
 /**
+ * 批量清理的开放范围（2026-10-25 拍板）：只做整条目，且先开 toolchain /
+ * ai_tools。repos 整仓保持单次确认——一次勾十个仓库一起删，确认弹窗能承载
+ * 的注意力不够；构建产物跨仓库的范围口径也不同（相对路径按仓库根解析）。
+ *
+ * **这不是「能不能删」的判据**：那是 `supports_clean`（组）+ `Item.cleanable`
+ * （行），真相在 Rust 侧。这里只是「给不给多选界面」的产品范围——后端
+ * `clean_items` 对 `item_ids` 本来就按数组逐项复核，放宽范围不会出现
+ * 「界面给按钮、服务端拒绝」。
+ */
+export const BATCH_CLEAN_GROUP_IDS: ReadonlySet<string> = new Set(["toolchain", "ai_tools"]);
+
+/** 批量清理确认弹窗的目标：打开那一刻锁定的组与条目快照。 */
+export interface BatchCleanTarget {
+  groupId: string;
+  items: Item[];
+}
+
+export function supportsBatchClean(group: AssetGroup | null): boolean {
+  return !!group?.supports_clean && BATCH_CLEAN_GROUP_IDS.has(group.id);
+}
+
+/** 批量模式可勾选的行：与单条清理同一判据（`canCleanItem`），不另开一套。 */
+export function batchCleanRows(group: AssetGroup | null, items: Item[]): Item[] {
+  if (!supportsBatchClean(group)) return [];
+  return items.filter((it) => canCleanItem(group, it));
+}
+
+/** 已选条目的可回收合计；只计仍在可勾选集合里的 id（筛掉的不会被算进来）。 */
+export function batchReclaimOf(
+  group: AssetGroup | null,
+  items: Item[],
+  selected: ReadonlySet<string>,
+): number {
+  return batchCleanRows(group, items)
+    .filter((it) => selected.has(it.id))
+    .reduce((sum, it) => sum + reclaimableOf(it), 0);
+}
+
+/**
+ * 可见集合变化后裁剪选择。筛选/搜索隐藏的条目不能留在选中集里——确认弹窗
+ * 列的是快照，但「选中了但看不见」本身就是误删风险；宁可在筛选时丢掉选择。
+ * 集合没变化时返回原引用，避免 watch 里无谓地触发渲染。
+ */
+export function pruneSelection(
+  selected: ReadonlySet<string>,
+  allowed: ReadonlySet<string>,
+): ReadonlySet<string> {
+  let changed = false;
+  const out = new Set<string>();
+  for (const id of selected) {
+    if (allowed.has(id)) out.add(id);
+    else changed = true;
+  }
+  return changed ? out : selected;
+}
+
+/**
  * 「清理产物」的判据与 `canCleanItem` 是两个动作：整仓删除看 `cleanable`
  * （复核未推送/改动），产物清理看 `metrics.artifacts`（复核白名单）。
  * 没有 `supports_clean` 的组、非宿主机路径一律不给。
@@ -125,4 +182,10 @@ const CLEAN_KIND_BY_GROUP: Readonly<Record<string, CleanKind>> = {
 
 export function cleanKindOf(groupId: string | null): CleanKind {
   return (groupId && CLEAN_KIND_BY_GROUP[groupId]) || "cache";
+}
+
+/** AI 工具行的类别标签（后端 `metrics.kind`）；缺失时给中性词，不猜。 */
+export function aiKindLabel(item: Item | null): string {
+  const m = item?.metrics.kind;
+  return m && m.t === "s" ? String(m.v) : "数据";
 }

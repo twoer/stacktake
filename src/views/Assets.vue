@@ -5,7 +5,9 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
+  Check,
   FolderPlus,
+  ListChecks,
   LoaderCircle,
   RefreshCw,
 } from "@lucide/vue";
@@ -23,7 +25,18 @@ import {
 import { useAssets } from "@/composables/useAssets";
 import { useRepoRoots } from "@/composables/useRepoRoots";
 import { captureRowTops, playRowFlip } from "@/lib/motion";
-import { canCleanArtifactsItem, canCleanItem, cell, isBlockerTag, tagHint } from "@/lib/assets";
+import {
+  batchCleanRows,
+  batchReclaimOf,
+  canCleanArtifactsItem,
+  canCleanItem,
+  cell,
+  isBlockerTag,
+  pruneSelection,
+  supportsBatchClean,
+  tagHint,
+  type BatchCleanTarget,
+} from "@/lib/assets";
 import {
   countMatches,
   dimensionsFor,
@@ -45,6 +58,7 @@ import ByteValue from "@/components/ByteValue.vue";
 import Hint from "@/components/Hint.vue";
 import ScanBar from "@/components/ScanBar.vue";
 import CleanDialog from "@/components/assets/CleanDialog.vue";
+import BatchCleanDialog from "@/components/assets/BatchCleanDialog.vue";
 import ArtifactCleanDialog from "@/components/assets/ArtifactCleanDialog.vue";
 import RowContextMenu from "@/components/assets/RowContextMenu.vue";
 import InspectorPanel from "@/components/assets/InspectorPanel.vue";
@@ -91,6 +105,13 @@ const dims = ref<Record<string, string | null>>({});
 const openFilter = ref(false);
 /** 选中的行 id（检查器显示它的明细）。null = 检查器显示分组概览。 */
 const selected = ref<string | null>(null);
+/**
+ * 批量清理模式（2026-10-25）。只在 lib/assets 登记的分组开放（toolchain /
+ * ai_tools）；进入后行首出现复选框，点击行改为勾选，底部状态栏换成动作条。
+ * 选择只活在当前分组 + 当前筛选结果内——切组、被筛选隐藏都会清掉。
+ */
+const batchMode = ref(false);
+const batchSelected = ref<ReadonlySet<string>>(new Set());
 /** 检查器开关。窗口不够宽时默认收起——侧栏 208 + 检查器 252 会把表格挤死。 */
 const inspectorOpen = ref(window.innerWidth >= 1040);
 /**
@@ -110,6 +131,8 @@ watch(activeId, () => {
   dims.value = {};
   openFilter.value = false;
   selected.value = null;
+  batchMode.value = false;
+  batchSelected.value = new Set();
   // 切分组回到页顶：滚到第 200 行再换组，旧 scrollTop 会把人丢在半页上
   void nextTick(() => scrollArea.value?.scrollTo({ top: 0 }));
 });
@@ -245,17 +268,34 @@ function askCleanArtifacts(item: Item) {
   artifactTarget.value = { groupId, item };
 }
 
+/** 批量清理确认的目标：打开那一刻锁定的组 + 条目快照（与 cleanTarget 同一先例）。 */
+const batchTarget = ref<BatchCleanTarget | null>(null);
+
+function askBatchClean() {
+  const groupId = current.value?.id;
+  if (!groupId || !selectedBatchItems.value.length) return;
+  batchTarget.value = {
+    groupId,
+    items: selectedBatchItems.value.map((it) => ({ ...it })),
+  };
+}
+
 /** 成败 toast + 重扫（缓存里少/变了东西，别让界面停留在旧快照）。
  *  只重扫被清理的那个分组（`CleanResult.group_id`）：清理只动一组的数据，
  *  全量重扫要几十秒，其余分组没变，犯不着陪跑。全失败 = 什么都没删成，
  *  数据没变，不扫。 */
-async function applyCleanResult(r: CleanResult) {
+async function applyCleanResult(r: CleanResult, labels?: ReadonlyMap<string, string>) {
   if (r.succeeded.length > 0) {
-    toast.success(`已移入废纸篓，腾出 ${formatBytes(r.freed_bytes)}`);
+    toast.success(
+      r.succeeded.length > 1
+        ? `已将 ${r.succeeded.length} 项移入废纸篓，腾出 ${formatBytes(r.freed_bytes)}`
+        : `已移入废纸篓，腾出 ${formatBytes(r.freed_bytes)}`,
+    );
   }
-  // id = "*" 是整个计划被拒（如未确认），其余是单项失败（复核不通过/废纸篓出错）
+  // id = "*" 是整个计划被拒（如未确认），其余是单项失败（复核不通过/废纸篓出错）。
+  // 批量时逐项报失败；有 labels 就把 id 翻成行名（toolchain id 带前缀，路径也长）。
   for (const f of r.failed) {
-    toast.error(f.id === "*" ? f.reason : `${f.id}：${f.reason}`);
+    toast.error(f.id === "*" ? f.reason : `${labels?.get(f.id) ?? f.id}：${f.reason}`);
   }
   if (r.succeeded.length === 0) return;
   const before = sizeSnapshot();
@@ -272,6 +312,7 @@ async function applyCleanResult(r: CleanResult) {
 // artifactTarget）在父组件：全局键盘的 Escape 优先级要读它。
 
 const cleanDialog = ref<InstanceType<typeof CleanDialog> | null>(null);
+const batchDialog = ref<InstanceType<typeof BatchCleanDialog> | null>(null);
 const artifactDialog = ref<InstanceType<typeof ArtifactCleanDialog> | null>(null);
 
 async function confirmClean() {
@@ -282,7 +323,7 @@ async function confirmClean() {
     const r = await invoke<CleanResult>("clean_items", {
       plan: { group_id: t.groupId, item_ids: [t.item.id], confirmed: true, scope: "repo" },
     });
-    await applyCleanResult(r);
+    await applyCleanResult(r, new Map([[t.item.id, t.item.name]]));
   } catch (e) {
     toast.error(String(e));
   }
@@ -303,7 +344,35 @@ async function confirmCleanArtifacts(targets: string[], item: Item) {
         artifact_targets: targets,
       },
     });
-    await applyCleanResult(r);
+    await applyCleanResult(r, new Map([[item.id, item.name]]));
+  } catch (e) {
+    toast.error(String(e));
+  }
+}
+
+/**
+ * 批量确认：一次 `clean_items` 带上全部 id。服务端逐项复核并把成功/失败分开
+ * 返回——部分失败是正常结果，不是整单回滚；失败项按行名报出来。
+ *
+ * 成功（或部分成功）后退出批量模式：成功的条目即将消失，勾选态留着没有意义；
+ * invoke 本身失败（IPC/后端错误）则保留选择，用户可以直接重试。
+ */
+async function confirmBatchClean() {
+  const t = batchTarget.value;
+  if (!t) return;
+  const labels = new Map(t.items.map((it) => [it.id, it.name]));
+  batchTarget.value = null;
+  try {
+    const r = await invoke<CleanResult>("clean_items", {
+      plan: {
+        group_id: t.groupId,
+        item_ids: t.items.map((it) => it.id),
+        confirmed: true,
+        scope: "repo",
+      },
+    });
+    if (r.succeeded.length > 0) exitBatchMode();
+    await applyCleanResult(r, labels);
   } catch (e) {
     toast.error(String(e));
   }
@@ -321,12 +390,15 @@ function onGlobalPointerDown(e: PointerEvent) {
 function onGlobalKeyDown(e: KeyboardEvent) {
   if (e.key === "Escape") {
     // 弹窗开着时 Esc 只收弹窗——别把后面的选中态一起清了
-    if (cleanTarget.value || artifactTarget.value) {
+    if (cleanTarget.value || artifactTarget.value || batchTarget.value) {
       cleanTarget.value = null;
       artifactTarget.value = null;
+      batchTarget.value = null;
     } else if (menu.value || openFilter.value) {
       closeMenu();
       openFilter.value = false;
+    } else if (batchMode.value) {
+      exitBatchMode();
     } else if (selected.value) {
       selected.value = null;
     }
@@ -334,7 +406,8 @@ function onGlobalKeyDown(e: KeyboardEvent) {
   }
   // 弹窗开着时键盘归弹窗：Tab 在弹窗内循环（两个弹窗都只有「取消 / 确认」两个按钮），
   // 其余快捷键一律不响应——否则 "/" 会把焦点搜到背后的表格、↑↓ 会改动幕后的选中行。
-  const openDialog = cleanDialog.value?.rootEl ?? artifactDialog.value?.rootEl;
+  const openDialog =
+    cleanDialog.value?.rootEl ?? batchDialog.value?.rootEl ?? artifactDialog.value?.rootEl;
   if (openDialog) {
     if (e.key === "Tab") {
       const nodes = [...openDialog.querySelectorAll<HTMLElement>("button:not([disabled])")];
@@ -363,6 +436,23 @@ function onGlobalKeyDown(e: KeyboardEvent) {
     e.preventDefault();
     input.focus();
     return;
+  }
+  // 批量模式：空格勾选光标行，Cmd/Ctrl+A 全选当前视图的可清理行。
+  // 光标仍复用 selected（↑↓ 已经在动它），只是不再驱动检查器。
+  if (batchMode.value && !inText) {
+    if (e.key === " ") {
+      const it = visibleRows.value.find((r) => r.item.id === selected.value)?.item;
+      if (it) {
+        e.preventDefault();
+        toggleBatchItem(it);
+      }
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      batchSelected.value = new Set(visibleBatchRows.value.map((it) => it.id));
+      return;
+    }
   }
   if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !inText) {
     const ids = visibleRows.value.map((r) => r.item.id);
@@ -517,7 +607,10 @@ const colMeta = computed(() =>
   }),
 );
 
-const gridCols = computed(() => colMeta.value.map((c) => c.width).join(" "));
+/** 批量模式下最前面多一列 14px 复选框，表头与行共用同一条网格。 */
+const gridCols = computed(
+  () => (batchMode.value ? "14px " : "") + colMeta.value.map((c) => c.width).join(" "),
+);
 
 /**
  * 列头 tooltip。体积列的绿色含义是合并可回收列后唯一需要解释的新语义：
@@ -544,6 +637,80 @@ const baseRows = computed(() => {
 
 const visibleRows = computed(() =>
   visibleRowsOf(baseRows.value, search.value, dims.value, sortKey.value, sortDesc.value),
+);
+
+// ---- 批量清理（2026-10-25）----
+//
+// 后端 `clean_items` 的 item_ids 本来就是数组、逐项复核并分项返回；这里补的
+// 是多选界面。批量是显式进入的第二种形态，单条清理仍是默认路径。
+
+const batchRows = computed(() => batchCleanRows(current.value, current.value?.items ?? []));
+const batchAvailable = computed(() => supportsBatchClean(current.value));
+/** 批量模式下当前可见、可勾选的行：全选与裁剪都只认这一批（被筛掉的不参与）。 */
+const visibleBatchRows = computed(() => {
+  if (!batchMode.value) return [];
+  const selectable = new Set(batchRows.value.map((it) => it.id));
+  return visibleRows.value.map((r) => r.item).filter((it) => selectable.has(it.id));
+});
+const selectedBatchItems = computed(() =>
+  visibleBatchRows.value.filter((it) => batchSelected.value.has(it.id)),
+);
+const batchSelectedBytes = computed(() =>
+  batchReclaimOf(current.value, current.value?.items ?? [], batchSelected.value),
+);
+const allVisibleBatchSelected = computed(
+  () =>
+    visibleBatchRows.value.length > 0 &&
+    selectedBatchItems.value.length === visibleBatchRows.value.length,
+);
+const someVisibleBatchSelected = computed(
+  () => selectedBatchItems.value.length > 0 && !allVisibleBatchSelected.value,
+);
+
+function exitBatchMode() {
+  batchMode.value = false;
+  batchSelected.value = new Set();
+}
+
+function toggleBatchMode() {
+  if (!batchAvailable.value || loading.value) return;
+  if (batchMode.value) {
+    exitBatchMode();
+    return;
+  }
+  batchMode.value = true;
+  batchSelected.value = new Set();
+}
+
+function isBatchSelected(it: Item): boolean {
+  return batchSelected.value.has(it.id);
+}
+
+function toggleBatchItem(it: Item) {
+  if (!batchMode.value || !canCleanItem(current.value, it)) return;
+  const next = new Set(batchSelected.value);
+  if (next.has(it.id)) next.delete(it.id);
+  else next.add(it.id);
+  batchSelected.value = next;
+}
+
+function toggleAllVisible() {
+  if (!visibleBatchRows.value.length) return;
+  batchSelected.value = allVisibleBatchSelected.value
+    ? new Set()
+    : new Set(visibleBatchRows.value.map((it) => it.id));
+}
+
+// 筛选/搜索把已勾选的行藏起来时，把选择裁到仍可见的集合上——「选中了但看不见」
+// 不该带进确认弹窗。排序不改变集合，key 不变，不会误伤。
+watch(
+  () => visibleBatchRows.value.map((it) => it.id).join("\n"),
+  () => {
+    if (!batchMode.value) return;
+    const allowed = new Set(visibleBatchRows.value.map((it) => it.id));
+    const next = pruneSelection(batchSelected.value, allowed);
+    if (next !== batchSelected.value) batchSelected.value = next;
+  },
 );
 
 function toggleSort(key: string) {
@@ -619,6 +786,11 @@ function onRowClick(it: Item) {
       router.push(`/assets/${gid}`);
       return;
     }
+  }
+  // 批量模式下点击行 = 勾选，不再改检查器的选中行
+  if (batchMode.value) {
+    toggleBatchItem(it);
+    return;
   }
   selected.value = selected.value === it.id ? null : it.id;
 }
@@ -722,6 +894,18 @@ async function onRescan() {
       :rescan-title="rescanTitle"
       @rescan="onRescan"
     >
+      <!-- 只在有可清理行的 toolchain / ai_tools 出现（见 lib/assets 的开放范围） -->
+      <Button
+        v-if="batchAvailable && batchRows.length && !batchMode"
+        size="xs"
+        variant="ghost"
+        :disabled="loading"
+        class="h-6 gap-1.5 text-[11px] text-muted-foreground [&_svg]:size-3.5"
+        @click="toggleBatchMode"
+      >
+        <ListChecks aria-hidden="true" />
+        批量清理
+      </Button>
       <FilterMenu
         v-if="dimsOfCurrent.length"
         :dims="dims"
@@ -859,6 +1043,27 @@ async function onRescan() {
             :class="isOverview ? 'text-[11px] tracking-[0.08em]' : ''"
             :style="{ gridTemplateColumns: gridCols }"
           >
+            <!-- 全选只作用于当前视图里可清理的行：筛选后的「全选」不能把看不见的行带上 -->
+            <button
+              v-if="batchMode"
+              role="checkbox"
+              :aria-checked="allVisibleBatchSelected ? 'true' : someVisibleBatchSelected ? 'mixed' : 'false'"
+              aria-label="全选当前视图的可清理行"
+              class="flex items-center justify-center"
+              :disabled="!visibleBatchRows.length"
+              @click="toggleAllVisible"
+            >
+              <span
+                class="flex size-3.5 items-center justify-center rounded-[3px] border"
+                :class="[
+                  allVisibleBatchSelected ? 'border-foreground bg-foreground text-background' : 'border-border',
+                  someVisibleBatchSelected ? 'border-foreground' : '',
+                ]"
+              >
+                <Check v-if="allVisibleBatchSelected" class="size-3" :stroke-width="3" aria-hidden="true" />
+                <span v-else-if="someVisibleBatchSelected" class="h-px w-2 bg-foreground" aria-hidden="true" />
+              </span>
+            </button>
             <button
               class="flex min-w-0 items-center gap-1 text-left transition-colors hover:text-foreground"
               :class="sortKey === 'name' ? 'text-foreground' : ''"
@@ -921,7 +1126,7 @@ async function onRescan() {
                 :data-row-id="row.item.id"
                 class="ledger-row border-t border-border/40 first:border-t-0"
                 :class="[
-                  selected === row.item.id ? 'selected' : '',
+                  (batchMode ? isBatchSelected(row.item) : selected === row.item.id) ? 'selected' : '',
                   flashIds.has(row.item.id) ? 'flash' : '',
                   isOverview ? 'is-overview' : '',
                 ]"
@@ -938,9 +1143,24 @@ async function onRescan() {
                   class="grid w-full min-w-0 items-baseline gap-2 px-3 text-left leading-[18px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   :style="{ gridTemplateColumns: gridCols }"
                   :class="isOverview ? 'py-3.5' : 'py-1'"
+                  :aria-pressed="batchMode ? isBatchSelected(row.item) : undefined"
                   @click="onRowClick(row.item)"
                   @contextmenu.prevent="openMenu($event, row.item)"
                 >
+                  <!-- 批量模式的行首勾选框：不可清理的行没有它，点击也无效 -->
+                  <span v-if="batchMode" class="flex items-center justify-center self-center">
+                    <span
+                      v-if="canCleanItem(current, row.item)"
+                      class="flex size-3.5 items-center justify-center rounded-[3px] border"
+                      :class="
+                        isBatchSelected(row.item)
+                          ? 'border-foreground bg-foreground text-background'
+                          : 'border-border'
+                      "
+                    >
+                      <Check v-if="isBatchSelected(row.item)" class="size-3" :stroke-width="3" aria-hidden="true" />
+                    </span>
+                  </span>
                   <!-- 行背景占比条已删（U15）：238 行按体积归一的灰条连成一道灰阶梯，
                        把表格读成仪表盘热力图；账本的比例语义由数字列与总览「占比」列承担。
                        名称与状态同一行：状态是 11px 小字不是药丸——药丸把单行撑成两行、
@@ -1099,6 +1319,36 @@ async function onRescan() {
       v-if="current"
       class="flex h-10 shrink-0 items-center justify-between gap-2 border-t border-border/40 px-3 text-[11px] text-muted-foreground"
     >
+      <!-- 批量模式把状态栏换成动作条：选中数 / 合计 + 取消 / 清理。
+           同一块位置换内容而不是再叠一条栏，布局高度不变。 -->
+      <template v-if="batchMode">
+        <span class="tabular-nums text-foreground">
+          已选 {{ selectedBatchItems.length }} 项
+          <template v-if="batchSelectedBytes > 0">
+            · 可回收 <ByteValue class="text-reclaim" :bytes="batchSelectedBytes" />
+          </template>
+        </span>
+        <div class="flex items-center gap-2">
+          <Button
+            size="xs"
+            variant="ghost"
+            class="h-6 text-[11px] text-muted-foreground"
+            @click="exitBatchMode"
+          >
+            取消
+          </Button>
+          <Button
+            size="xs"
+            variant="destructive"
+            class="h-6 text-[11px]"
+            :disabled="!selectedBatchItems.length"
+            @click="askBatchClean"
+          >
+            移入废纸篓…
+          </Button>
+        </div>
+      </template>
+      <template v-else>
       <!-- 合计是本屏最该看清的两个数之一（另一个在检查器主角位），近黑；
            整条状态栏底色是 muted，这里不显式抬到 foreground 的话会跟着一起灰 -->
       <!-- 总览档不带合计：masthead 主角数字与之同值同口径，一屏印两遍。
@@ -1141,6 +1391,7 @@ async function onRescan() {
              漏了「应用级入口应该恒定可达」；状态栏属于当前视图，换个分组就换一回，
              不再是它的位置。再想把它挪回来，先把这条理由推翻，别在两个地方各挂一个。 -->
       </div>
+      </template>
     </div>
 
     <!-- 行右键菜单（RowContextMenu）：位置钳制在组件内；点别处 / 滚动 / Esc /
@@ -1156,6 +1407,14 @@ async function onRescan() {
       :group-id="cleanTarget?.groupId ?? null"
       @confirm="confirmClean"
       @cancel="cleanTarget = null"
+    />
+
+    <!-- 批量清理确认弹窗：target 是打开那一刻锁定的组 + 条目快照 -->
+    <BatchCleanDialog
+      ref="batchDialog"
+      :target="batchTarget"
+      @confirm="confirmBatchClean"
+      @cancel="batchTarget = null"
     />
 
     <!-- 清理构建产物弹窗（P2）：勾选集合是弹窗组件的内部状态（打开即全选），

@@ -61,6 +61,7 @@ Scanner trait → AssetGroup → scan-cache.json → tauri command → Vue 表�
 `trash::delete`、`RepoScanner::clean_repo` / `ToolchainScanner::clean_cache` / `AiToolsScanner::clean_ai`、`CleanPlan` / `CleanResult` 经 `clean_items` command 接入前端。开启三条件已满足：前端二次确认 UI（检查器动作条 + 确认弹窗，列明路径/体积/废纸篓可恢复）+ 服务端 `confirmed` 字段校验（缺字段反序列化即拒，显式 `false` 再拒）+ 废纸篓兜底（`trash::delete`，绝不硬删）。
 
 - **只有这三组接了删除**（`supports_clean()` 返回 `true`）。其它 Scanner **别覆盖 `supports_clean()`**：没有删除实现却返回 `true`，等于宣称一个点不动的能力。
+- **批量清理只开 toolchain / ai_tools**（2026-10-25 拍板，整条清理）：repos 的整仓批量与跨仓库产物批量都不做。范围只在 `lib/assets.ts` 的 `BATCH_CLEAN_GROUP_IDS`——**这是 UI 范围，不是删除能力**，`supports_clean` 仍是能力唯一真相；选中行照样逐条过 `canCleanItem`，服务端照样逐条复核。
 - **repos 组内有两种删除，复核是两条路**（P2 起）：整仓（`clean_repo`，查未推送 / 未提交改动）与构建产物（`clean_artifacts`，按 `CleanPlan.scope` 派发——清产物不动源码与 `.git`，所以**不查** git 状态；藏有 `.git` 的产物目录整目录拒）。构建产物可以按目录勾选子集（`CleanPlan.artifact_targets`，相对仓库根，缺省 = 全部）：**前端选过不算数**，服务端把每条重新解析成绝对路径（拒 `..` / 绝对路径 / 空串 / 不存在的）再过与全量同一套复核，空数组视为「什么都没选中」直接拒，不静默跳过也不退化成清全部。产物判据 `repos::is_artifact_dir_under` 是纯「名字白名单 + 兄弟项目标记」规则，**跨平台一致、没有 win_rel 之分**；账面（`metrics.artifacts` / detail「构建产物」/ 标签「有产物」）与删除复核共用它，别只改一头。白名单加条目时 `artifact_whitelist_is_pinned` 会红。
 - **ai_tools 的一行 = 一个「工具 × 类别」**（B1）：`clean_ai` 只接受 `cleanable` 类别（日志 / 会话 / 缓存），根路径必须命中**本次** `tools_for` 白名单，并在点击那一刻重读目录、按文件名重新分类，只删当前仍属该类别的一级子项（软链跳过）。**会话删了不会再生**——确认弹窗必须单独把这条写在明处，别套缓存组的文案。
 - **前端别写死分组 id**：能力由后端以 `AssetGroup.supports_clean` 下发，`canClean` 判它。**能力的唯一真相在 Rust 侧**（S2 之前写死 `id === "repos"`，加第二个分组就漏改）。

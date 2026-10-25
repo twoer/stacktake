@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import type { Item } from "@/lib/types";
 import { reclaimableOf } from "@/lib/types";
-import { cleanKindOf } from "@/lib/assets";
+import { aiKindLabel, cleanKindOf } from "@/lib/assets";
 import { useModalFocus } from "@/composables/useModalFocus";
 import { Button } from "@/components/ui/button";
 import ByteValue from "@/components/ByteValue.vue";
@@ -43,12 +43,6 @@ useModalFocus(
  * 分岔表在 lib/assets（cleanKindOf）——这里只消费性质，不认得具体分组 id。
  */
 const cleanKind = computed(() => cleanKindOf(props.groupId));
-
-/** AI 工具行的类别标签（后端 `metrics.kind`）；缺失时给中性词，不猜。 */
-function aiKindLabel(item: Item | null): string {
-  const m = item?.metrics.kind;
-  return m && m.t === "s" ? String(m.v) : "数据";
-}
 
 /** 工具链缓存删掉的后果：按 detail 的说明逐条显示，不空喊「可恢复」。 */
 function cleanNote(item: Item): string {
