@@ -109,3 +109,20 @@ export function canCleanArtifactsItem(group: AssetGroup | null, item: Item): boo
     isLocalPath(item.path)
   );
 }
+
+/**
+ * 清理确认弹窗「会怎样」文案的性质分岔。按分组 id 分岔的只是**呈现语气**——
+ * 删仓库丢源码、删缓存只花重下的时间、删 AI 数据里的会话丢历史；能力判据仍在
+ * Rust 侧（`supports_clean` → `canCleanItem`），这里登记的永远是文案不是权限。
+ * 新开清理入口的分组若不登记，会落到「缓存」措辞——那句话对它未必准，登记一下。
+ */
+export type CleanKind = "repo" | "ai" | "cache";
+
+const CLEAN_KIND_BY_GROUP: Readonly<Record<string, CleanKind>> = {
+  repos: "repo",
+  ai_tools: "ai",
+};
+
+export function cleanKindOf(groupId: string | null): CleanKind {
+  return (groupId && CLEAN_KIND_BY_GROUP[groupId]) || "cache";
+}

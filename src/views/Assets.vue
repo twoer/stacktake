@@ -206,12 +206,17 @@ async function onCopyPath(item: Item) {
 // 校验（Rust 侧）+ 废纸篓兜底（`trash::delete`）。**刻意不进右键菜单**——和
 // 「复制路径」并列放会把破坏性操作变成误触目标。入口只在检查器动作条。
 
-/** 清理确认弹窗的目标条目。null = 没打开。 */
-const cleanTarget = ref<Item | null>(null);
+/**
+ * 清理确认弹窗的目标。组 id 与条目在 askClean 这一刻锁成一体：确认时不再读
+ * `current`——「这条目属于哪个组」是目标自身的事实，不该依赖一个会变的计算
+ * 属性（今天弹窗模态、键盘圈闭，没有换组路径；锁上之后连这个前提都不需要）。
+ */
+const cleanTarget = ref<{ groupId: string; item: Item } | null>(null);
 
 function askClean(item: Item) {
-  if (!canCleanItem(current.value, item)) return;
-  cleanTarget.value = item;
+  const groupId = current.value?.id;
+  if (!groupId || !canCleanItem(current.value, item)) return;
+  cleanTarget.value = { groupId, item };
 }
 
 // ---- 清理构建产物（P2）----
@@ -221,16 +226,17 @@ function askClean(item: Item) {
 // 现找产物目录复核 + 废纸篓。同样**不进右键菜单**。范围用 `scope: "artifacts"`
 // 传给后端；前端仅传勾选的相对路径，服务端逐条重新复核。
 
-/** 产物清理确认弹窗的目标条目。null = 没打开。 */
-const artifactTarget = ref<Item | null>(null);
+/** 产物清理确认弹窗的目标。组 id 同样在打开那一刻锁进目标（见 cleanTarget）。 */
+const artifactTarget = ref<{ groupId: string; item: Item } | null>(null);
 
 /**
  * 「清理产物」的判据与整仓清理是两个动作（判据在 lib/assets：canCleanArtifactsItem）。
  */
 function askCleanArtifacts(item: Item) {
-  if (!canCleanArtifactsItem(current.value, item)) return;
+  const groupId = current.value?.id;
+  if (!groupId || !canCleanArtifactsItem(current.value, item)) return;
   // 打开即全选的默认在弹窗组件内初始化（watch target）
-  artifactTarget.value = item;
+  artifactTarget.value = { groupId, item };
 }
 
 /** 成败 toast + 重扫（缓存里少/变了东西，别让界面停留在旧快照）。
@@ -263,14 +269,12 @@ const cleanDialog = ref<InstanceType<typeof CleanDialog> | null>(null);
 const artifactDialog = ref<InstanceType<typeof ArtifactCleanDialog> | null>(null);
 
 async function confirmClean() {
-  const item = cleanTarget.value;
-  if (!item) return;
-  const groupId = current.value?.id;
-  if (!groupId) return;
+  const t = cleanTarget.value;
+  if (!t) return;
   cleanTarget.value = null;
   try {
     const r = await invoke<CleanResult>("clean_items", {
-      plan: { group_id: groupId, item_ids: [item.id], confirmed: true, scope: "repo" },
+      plan: { group_id: t.groupId, item_ids: [t.item.id], confirmed: true, scope: "repo" },
     });
     await applyCleanResult(r);
   } catch (e) {
@@ -279,10 +283,9 @@ async function confirmClean() {
 }
 
 async function confirmCleanArtifacts(targets: string[], item: Item) {
-  const groupId = current.value?.id;
-  if (!groupId) return;
+  const groupId = artifactTarget.value?.groupId;
   // 空勾选不发请求：服务端会把空数组当「什么都没选中」拒掉，前端先挡一道
-  if (targets.length === 0) return;
+  if (!groupId || targets.length === 0) return;
   artifactTarget.value = null;
   try {
     const r = await invoke<CleanResult>("clean_items", {
@@ -1309,8 +1312,8 @@ async function onRescan() {
          applyCleanResult 在本组件，与产物弹窗共用。 -->
     <CleanDialog
       ref="cleanDialog"
-      :target="cleanTarget"
-      :group-id="current?.id ?? null"
+      :target="cleanTarget?.item ?? null"
+      :group-id="cleanTarget?.groupId ?? null"
       @confirm="confirmClean"
       @cancel="cleanTarget = null"
     />
@@ -1319,7 +1322,7 @@ async function onRescan() {
          确认时把勾选的相对路径随 emit 展开交上来。 -->
     <ArtifactCleanDialog
       ref="artifactDialog"
-      :target="artifactTarget"
+      :target="artifactTarget?.item ?? null"
       @confirm="confirmCleanArtifacts"
       @cancel="artifactTarget = null"
     />

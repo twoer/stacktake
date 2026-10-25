@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import type { Item } from "@/lib/types";
 import { reclaimableOf } from "@/lib/types";
+import { cleanKindOf } from "@/lib/assets";
 import { useModalFocus } from "@/composables/useModalFocus";
 import { Button } from "@/components/ui/button";
 import ByteValue from "@/components/ByteValue.vue";
@@ -39,12 +40,9 @@ useModalFocus(
 /**
  * 弹窗里那条「会怎样」的描述。三种性质不同，不能共用一句话：
  * 删仓库丢源码、删缓存只花重下的时间、删 AI 工具数据里的**会话丢历史**。
+ * 分岔表在 lib/assets（cleanKindOf）——这里只消费性质，不认得具体分组 id。
  */
-const cleanKind = computed(() => {
-  if (props.groupId === "repos") return "repo";
-  if (props.groupId === "ai_tools") return "ai";
-  return "cache";
-});
+const cleanKind = computed(() => cleanKindOf(props.groupId));
 
 /** AI 工具行的类别标签（后端 `metrics.kind`）；缺失时给中性词，不猜。 */
 function aiKindLabel(item: Item | null): string {
