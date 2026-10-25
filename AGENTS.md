@@ -20,6 +20,7 @@ Scanner trait → AssetGroup → scan-cache.json → tauri command → Vue 表�
   - `Item.detail` 是 `HashMap<String, String>`，序列化顺序不确定、前端按对象键序渲染——要排序就键名前缀编号（`"1. logs"`）。
   - **分节与筛选读 `Item.group_key`，不解析名字**。`Some(值)` = 本条属于某维度取值（同值做小节标题、显示小计，行名剥 ` · ` 前缀），`None` = 本组不分节。维度名由前端按分组声明（`Assets.vue` 的 `PREFIX_LABEL`），只有真有 ≥2 个取值的维度才出筛选按钮。给了 `group_key` 的名字必须以 `key · ` 开头（两边契约都断言）。标签只放筛选真正需要的（如「可清理」）——类别、工具名别做成标签，行里重复显示挤爆单行 tab。
 - `src/lib/types.ts` 是 Rust 结构的镜像，改 Rust 结构必须同步。**字段名逐字一致（snake_case，没有 `rename_all`）**——多单词字段写驼峰 vue-tsc 抓不到（类型是自己声明的，G1 踩过）。
+- **展示位下发文案键，不下发成品串**（P2a）：分组 `label`/`summary`/`notes`/`error`、`Field.label`、`Tag{key,label}`、行的 `label`/`short_label`/`group_label`/`kind_label` 是 Rust `Text{r|k|f}`；`Item.name` / `group_key` / `metrics.kind` 的**原值**是搜索与筛选的词表，语言无关才正确。五份目录在前端 `src/locales/*.json`，后端下发的每个 `data.*` 键由 `scan/tests.rs::every_displayed_key_has_a_translation_in_all_five_catalogs` 钉住（缺一种语言即红）。切语言只重渲染、不重扫、不额外 IPC。
 - `examples/dump.rs` 与 app 都走 `scanners_with_roots(roots::for_scan(app_data_dir))` + 现算总览，读取同一份补充目录配置，**不要另写扫描器列表或漏掉补充目录**。`scanners()` 保留作默认目录入口与注册测试。
 - 现有扫描器：`repos` / `toolchain`（包管理器与工具链缓存）/ `ai_tools`（label「**编辑器与 AI 工具**」）/ `local_models`（Ollama / LM Studio / HuggingFace）/ `dev_env`（Java 与移动端）/ `wsl`（发行版虚拟磁盘，**仅 Windows 注册**）。**跟环境装没装有关的（dev_env、toolchain、local_models、wsl）走「不存在就不注册」**，见硬约束 8。**`ssh` 与 `docker` 已实现但未注册**（D6 拍板不进 V1，H3 移出注册），两个文件刻意保留在树里（重新注册只是一行），**别顺手加回来**。**`java` / `harmony` 暂时隐藏**（H14，2026-10-20）：`dev_env` 照常构造与测试，`lib.rs` 注册时按 `HIDDEN_GROUPS` 撤下；恢复 = 清名单 + 改 `scanner_registration_is_pinned` 两条断言 + SCHEMA_VERSION +1。
 - **`scanners()` 注册顺序 = 侧栏顺序 = `scan::GROUP_ORDER` 固定语义序**（D13）：repos → java → ios → android → harmony → toolchain → ai_tools → local_models → wsl（源码 → 环境 → 缓存 → 工具 → 模型 → 虚拟机）。**不按体积排序**——顺序随数据跳会丢失空间记忆。`with_overview` 两条路径（扫完 / 读缓存）都按它重排并插入总览，**缓存里的旧顺序也显示为新序**。未知 id 排最后；新增分组须登记 `GROUP_ORDER`（`scanner_registration_follows_group_order` 守着）。总览**不在** `scanners()`——由 `scan::synthesize_overview` 现算（纯函数，不碰磁盘），行顺序同序。**缓存里不存总览**：否则总览与分组会对不上。总览行 id 是 `overview:<分组id>`、path 是 `overview://<分组id>`（不是宿主机路径，`isLocalPath()` 天然不给动作）。
@@ -175,7 +176,7 @@ cd src-tauri && cargo test                # 只跑 Rust 测试（本机真实数
 cd src-tauri && cargo run --example dump  # 扫一次写缓存再读回，输出 JSON 供人工核对
 ```
 
-测试目前 156 passed + 2 skipped（约 8 秒；skipped 的是对照 bench `bench_native_size_vs_du` 与真实数据守恒检查 `repo_nesting_real_data_stays_conserved`）。**用例数随刀增长，改了扫描逻辑顺手更新这个数**——它过期时最容易骗人。**扫描逻辑的测试优先喂临时目录、不依赖本机装了什么**，且**测试要自己写一份独立实现当基准**（`tree_bytes`），别拿被测代码当 oracle——两边一起错会一起绿；反过来，扫真实数据的用例容差要按「数据是活的」给，不能用它证明精度。各 Scanner 的测试思路范例（docker 喂真实 CLI 输出、toolchain 全喂假 home、WSL 读取走注入——「本机不注册」不等于「没测」）见 appendix。
+测试目前 158 passed + 2 skipped（约 8 秒；skipped 的是对照 bench `bench_native_size_vs_du` 与真实数据守恒检查 `repo_nesting_real_data_stays_conserved`）。**用例数随刀增长，改了扫描逻辑顺手更新这个数**——它过期时最容易骗人。**扫描逻辑的测试优先喂临时目录、不依赖本机装了什么**，且**测试要自己写一份独立实现当基准**（`tree_bytes`），别拿被测代码当 oracle——两边一起错会一起绿；反过来，扫真实数据的用例容差要按「数据是活的」给，不能用它证明精度。各 Scanner 的测试思路范例（docker 喂真实 CLI 输出、toolchain 全喂假 home、WSL 读取走注入——「本机不注册」不等于「没测」）见 appendix。
 
 ## 代码风格
 

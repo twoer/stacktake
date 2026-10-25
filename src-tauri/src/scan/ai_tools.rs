@@ -34,7 +34,8 @@
 use crate::scan::platform::Platform;
 use crate::scan::repos::{dir_size_fast, human_bytes};
 use crate::scan::{
-    AssetGroup, CleanFailure, CleanPlan, CleanResult, Field, Item, MetricValue, Scanner,
+    AssetGroup, CleanFailure, CleanPlan, CleanResult, Field, Item, MetricValue, Scanner, Tag, Text,
+    TextArg, field_text, kind_text,
 };
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap};
@@ -116,6 +117,12 @@ impl Category {
             Category::Runtime => "runtime",
             Category::Unknown => "unknown",
         }
+    }
+
+    /// 类别列的展示名。`metrics.kind` 仍存中文原值（筛选与清理复核都读它），
+    /// 展示走 `data.kind.*`。
+    pub(crate) fn text(self) -> Text {
+        kind_text(self.label())
     }
 
     pub(crate) fn from_key(key: &str) -> Option<Self> {
@@ -429,6 +436,33 @@ fn collect_entries(tool: usize, root: &Path) -> (Vec<RawEntry>, usize) {
     (entries, symlinks)
 }
 
+/// 工具名展示。品牌名不翻译；带中文后缀的（扩展 / 配置 / 缓存 / 桌面版…）
+/// 走 `data.tool.*`——它们既是小节标题也是行名的一部分，漏一条就会在
+/// 英文界面里露出中文。
+fn tool_text(label: &str) -> Text {
+    if let Some(product) = label.strip_prefix("JetBrains ")
+        && product != "配置"
+        && product != "缓存"
+    {
+        return Text::fmt("data.tool.jetbrainsProduct").arg("name", Text::raw(product));
+    }
+    let key = match label {
+        "opencode 配置" => "opencodeConfig",
+        "VS Code 扩展" => "vscodeExtensions",
+        "JetBrains 配置" => "jetbrainsConfig",
+        "JetBrains 缓存" => "jetbrainsCache",
+        "DeepSeek Harness 桌面版" => "deepseekDesktop",
+        "Warp 配置" => "warpConfig",
+        "Warp 本地配置" => "warpLocalConfig",
+        "ZCode 桌面版" => "zcodeDesktop",
+        "灵码" => "lingma",
+        "灵码 本地数据" => "lingmaLocalData",
+        "Qoder 桌面版" => "qoderDesktop",
+        _ => return Text::raw(label),
+    };
+    Text::key(format!("data.tool.{key}"))
+}
+
 /// 按「工具 × 类别」聚合成 Item。
 ///
 /// 这个粒度刚好落在决策点上：用户要决定的是「删不删这一块」，
@@ -469,7 +503,7 @@ fn aggregate(tools: &[Tool], entries: &[RawEntry]) -> Vec<Item> {
                 "last_activity".into(),
                 match last_activity {
                     Some(ts) => MetricValue::Int(ts),
-                    None => MetricValue::text("未知"),
+                    None => MetricValue::key("data.value.unknown"),
                 },
             );
             metrics.insert("kind".into(), MetricValue::text(cat.label()));
@@ -478,7 +512,7 @@ fn aggregate(tools: &[Tool], entries: &[RawEntry]) -> Vec<Item> {
             // 分节渲染），再做成标签是重复显示；工具名做成标签更是灾难——9 个工具
             // 加 8 个类别十几颗 pill，挤爆单行 tab。
             let tags = if cleanable {
-                vec!["可清理".to_string()]
+                vec![Tag::new("cleanable")]
             } else {
                 vec![]
             };
@@ -490,9 +524,13 @@ fn aggregate(tools: &[Tool], entries: &[RawEntry]) -> Vec<Item> {
                 id: ai_id(&tool.root, cat),
                 tags,
                 name: format!("{} · {}", tool.label, cat.label()),
+                label: None,
+                short_label: Some(cat.text()),
+                group_label: Some(tool_text(&tool.label)),
                 group_key: Some(tool.label.clone()),
                 path: tool.root.display().to_string(),
                 metrics,
+                kind_label: Some(cat.text()),
                 detail: Some(detail),
                 artifact_entries: vec![],
                 cleanable,
@@ -657,10 +695,6 @@ impl Scanner for AiToolsScanner {
         "ai_tools"
     }
 
-    fn label(&self) -> &'static str {
-        "编辑器与 AI 工具"
-    }
-
     fn scan(&self) -> AssetGroup {
         let mut entries: Vec<RawEntry> = Vec::new();
         let mut symlinks = 0usize;
@@ -673,13 +707,11 @@ impl Scanner for AiToolsScanner {
         if entries.is_empty() {
             return AssetGroup {
                 id: self.id().into(),
-                label: self.label().into(),
-                summary: "未找到 AI 工具或编辑器数据目录".into(),
+                label: self.label(),
+                summary: Text::key("data.summary.aiToolsEmpty"),
                 fields: ai_fields(),
                 items: vec![],
-                notes: Some(vec![
-                    "扫描位置仅限白名单中的 AI 工具与编辑器数据目录（见 ai_tools.rs 的 SPECS 表），不存在就跳过；不搜索整个主目录，不读取文件内容".into(),
-                ]),
+                notes: Some(vec![Text::key("data.note.aiTools.scope")]),
                 error: None,
                 supports_clean: true,
             };
@@ -725,44 +757,38 @@ impl Scanner for AiToolsScanner {
             .filter(|e| e.cat == Category::Unknown)
             .count();
 
-        let mut notes: Vec<String> =
-            vec!["只统计文件名与体积，不读取任何文件内容，凭据不会进入扫描结果".into()];
+        let mut notes: Vec<Text> = vec![Text::key("data.note.aiTools.noContent")];
         if has(Category::Session) {
-            notes.push(
-                "会话数据含完整对话记录与代码片段，删除不可逆，清理前先确认还要不要留".into(),
-            );
+            notes.push(Text::key("data.note.aiTools.session"));
         }
         if has(Category::Index) {
-            notes.push(
-                "索引类含 SQLite 数据库文件（Codex 的 logs_2.sqlite 名义是日志、载体是数据库），直接删除可能损坏工具状态".into(),
-            );
+            notes.push(Text::key("data.note.aiTools.index"));
         }
         if has(Category::Skill) {
-            notes.push("技能与插件删除后需重新安装，本工具不开放清理".into());
+            notes.push(Text::key("data.note.aiTools.skill"));
         }
         if unknown_count > 0 {
-            notes.push(format!(
-                "未识别 {} 项（合计 {}）归入「未知」，一律不开放清理",
-                unknown_count,
-                human_bytes(unknown_bytes)
-            ));
+            notes.push(
+                Text::fmt("data.note.aiTools.unknown")
+                    .arg("count", TextArg::num(unknown_count))
+                    .arg("bytes", TextArg::bytes(unknown_bytes)),
+            );
         }
         if symlinks > 0 {
-            notes.push(format!("跳过 {} 个符号链接，不跟随统计", symlinks));
+            notes
+                .push(Text::fmt("data.note.aiTools.symlinks").arg("count", TextArg::num(symlinks)));
         }
 
-        let summary = format!(
-            "{} 个位置 · {} 个条目 · 合计 {} · {} 项可回收 · 共 {}",
-            self.tools.len(),
-            items.len(),
-            human_bytes(total),
-            cleanable_count,
-            human_bytes(reclaimable)
-        );
+        let summary = Text::fmt("data.summary.aiTools")
+            .arg("locations", TextArg::num(self.tools.len()))
+            .arg("items", TextArg::num(items.len()))
+            .arg("total", TextArg::bytes(total))
+            .arg("clean", TextArg::num(cleanable_count))
+            .arg("reclaim", TextArg::bytes(reclaimable));
 
         AssetGroup {
             id: self.id().into(),
-            label: self.label().into(),
+            label: self.label(),
             summary,
             fields: ai_fields(),
             items,
@@ -788,19 +814,19 @@ fn ai_fields() -> Vec<Field> {
     vec![
         Field {
             key: "size".into(),
-            label: "体积".into(),
+            label: field_text("size"),
             numeric: Some(true),
             temporal: None,
         },
         Field {
             key: "last_activity".into(),
-            label: "最后活动".into(),
+            label: field_text("lastActivity"),
             numeric: Some(true),
             temporal: Some(true),
         },
         Field {
             key: "kind".into(),
-            label: "类别".into(),
+            label: field_text("kind"),
             numeric: None,
             temporal: None,
         },

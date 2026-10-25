@@ -21,7 +21,8 @@ import {
 } from "@lucide/vue";
 import type { Component } from "vue";
 import HarmonyOsIcon from "@/components/icons/HarmonyOsIcon.vue";
-import { groupSize } from "@/lib/types";
+import { groupLabelOf, groupSize } from "@/lib/types";
+import { t } from "@/lib/i18n";
 import { EASE_OUT, reducedMotion } from "@/lib/motion";
 import { useAssets } from "@/composables/useAssets";
 import { useUpdate } from "@/composables/useUpdate";
@@ -247,14 +248,14 @@ onUnmounted(() => {
               @click="pick('overview')"
             >
               <component :is="sideIcon('overview')" class="size-3.5 shrink-0" />
-              <span class="min-w-0 flex-1 truncate text-[13px]">总览</span>
+              <span class="min-w-0 flex-1 truncate text-[13px]">{{ t("sidebar.overview") }}</span>
               <span class="shrink-0 text-[11px] text-muted-foreground">
                 <ByteValue :bytes="totalSize" animate />
               </span>
             </button>
 
             <div class="px-2 pb-1 pt-3 text-[11px] font-semibold text-muted-foreground">
-              分组
+              {{ t("sidebar.groups") }}
             </div>
 
             <!-- 分组名被侧栏宽度截断时，tooltip 给全名。side=right：向侧栏内侧展开，
@@ -262,7 +263,7 @@ onUnmounted(() => {
             <Hint
               v-for="g in sidebarGroups"
               :key="g.id"
-              :text="g.label"
+              :text="groupLabelOf(g)"
               side="right"
             >
               <button
@@ -277,7 +278,7 @@ onUnmounted(() => {
                 @click="pick(g.id)"
               >
                 <component :is="sideIcon(g.id)" class="size-3.5 shrink-0" />
-                <span class="min-w-0 flex-1 truncate text-[13px]">{{ g.label }}</span>
+                <span class="min-w-0 flex-1 truncate text-[13px]">{{ groupLabelOf(g) }}</span>
                 <span class="shrink-0 text-[11px] text-muted-foreground">
                   <ByteValue v-if="groupSize(g) > 0" :bytes="groupSize(g)" animate />
                   <template v-else>—</template>
@@ -302,9 +303,9 @@ onUnmounted(() => {
           <Hint
             :text="
               updateState === 'available'
-                ? `有新版本 ${latest}，前往设置页下载`
+                ? t('sidebar.updateAvailable', { version: latest })
                 : version
-                  ? `当前版本 v${version}`
+                  ? t('sidebar.currentVersion', { version })
                   : undefined
             "
             side="right"
@@ -321,7 +322,7 @@ onUnmounted(() => {
               @click="router.push('/settings')"
             >
               <component :is="sideIcon('settings')" class="size-3.5 shrink-0" />
-              <span class="min-w-0 flex-1 truncate text-[13px]">设置</span>
+              <span class="min-w-0 flex-1 truncate text-[13px]">{{ t("sidebar.settings") }}</span>
               <template v-if="updateState === 'available'">
                 <span class="size-1.5 shrink-0 rounded-full bg-primary" />
                 <span class="shrink-0 text-[11px] tabular-nums text-primary">{{ latest }}</span>

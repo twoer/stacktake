@@ -4,6 +4,8 @@ import { ChevronRight, FolderOpen, Trash2 } from "@lucide/vue";
 import type { AssetGroup, Item } from "@/lib/types";
 import { artifactBytes, groupReclaimable, itemSize, reclaimableOf } from "@/lib/types";
 import { artifactRowsOf, canCleanArtifactsItem, canCleanItem, cell, isBlockerTag, orderedTags, tagHint } from "@/lib/assets";
+import { rowFullName } from "@/lib/rows";
+import { renderText, t } from "@/lib/i18n";
 import { isLocalPath, revealLabel } from "@/lib/path";
 import { Button } from "@/components/ui/button";
 import ByteValue from "@/components/ByteValue.vue";
@@ -69,7 +71,7 @@ function detailLabel(key: string): string {
        这里的数字只会与主区重复；工具栏的检查器开关在总览一并隐藏。 -->
   <div :key="inspectorKey" class="page-in min-h-0">
     <template v-if="selectedRow">
-      <h2 class="min-w-0 text-[14px] font-semibold leading-snug [overflow-wrap:anywhere]">{{ selectedRow.name }}</h2>
+      <h2 class="min-w-0 text-[14px] font-semibold leading-snug [overflow-wrap:anywhere]">{{ rowFullName(selectedRow) }}</h2>
       <p v-if="isLocalPath(selectedRow.path)" class="mt-1.5 select-text font-mono text-[11px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
         {{ selectedRow.path }}
       </p>
@@ -80,7 +82,7 @@ function detailLabel(key: string): string {
       <div v-if="isLocalPath(selectedRow.path)" class="mt-2 flex flex-wrap items-center gap-1.5">
         <Button size="xs" variant="outline" @click="emit('reveal', selectedRow)">
           <FolderOpen />
-          {{ revealLabel }}
+          {{ revealLabel() }}
         </Button>
         <Button
           v-if="canCleanItem(group, selectedRow)"
@@ -90,7 +92,7 @@ function detailLabel(key: string): string {
           @click="emit('askClean', selectedRow)"
         >
           <Trash2 />
-          清理
+          {{ t("inspector.clean") }}
         </Button>
         <Button
           v-if="canCleanArtifactsItem(group, selectedRow)"
@@ -100,7 +102,7 @@ function detailLabel(key: string): string {
           @click="emit('askCleanArtifacts', selectedRow)"
         >
           <Trash2 />
-          清理产物
+          {{ t("inspector.cleanArtifacts") }}
         </Button>
       </div>
 
@@ -109,19 +111,19 @@ function detailLabel(key: string): string {
            为「一屏两百行」定的，跟它无关。墨色两档与行内同口径（BLOCKER_TAGS），
            阻断项同样排最前。 -->
       <p v-if="selectedRow.tags.length" class="mt-2 flex flex-wrap items-baseline gap-x-1.5 text-[11px] text-muted-foreground">
-        <template v-for="(t, ti) in orderedTags(selectedRow.tags)" :key="t">
+        <template v-for="(tag, ti) in orderedTags(selectedRow.tags)" :key="tag.key">
           <span v-if="ti" aria-hidden="true">·</span>
-          <Hint :text="tagHint(t)">
-            <span :class="isBlockerTag(t) ? 'font-medium text-foreground' : ''">{{ t }}</span>
+          <Hint :text="tagHint(tag)">
+            <span :class="isBlockerTag(tag) ? 'font-medium text-foreground' : ''">{{ renderText(tag.label) }}</span>
           </Hint>
         </template>
       </p>
 
-      <h3 class="mt-4 border-t border-border/60 pt-3 text-[11px] font-medium text-muted-foreground">指标</h3>
+      <h3 class="mt-4 border-t border-border/60 pt-3 text-[11px] font-medium text-muted-foreground">{{ t("inspector.metrics") }}</h3>
       <dl class="mt-2 space-y-2">
         <template v-for="f in group.fields.slice(0, 3)" :key="f.key">
           <div class="flex items-baseline justify-between gap-2">
-            <dt class="shrink-0 text-[11px] text-muted-foreground">{{ f.label }}</dt>
+            <dt class="shrink-0 text-[11px] text-muted-foreground">{{ renderText(f.label) }}</dt>
             <!-- 与表格同一口径：可回收量与体积恒等的行（splitReclaim 为 false），
                  体积在指标区也染绿，不再单列一行「可回收」——那是同一个数印第二遍。
                  splitReclaim 的组保留独立的可回收行。 -->
@@ -138,20 +140,20 @@ function detailLabel(key: string): string {
           </div>
         </template>
         <div v-if="splitReclaim && reclaimableOf(selectedRow) > 0" class="flex items-baseline justify-between gap-2">
-          <dt class="text-xs text-muted-foreground">可回收</dt>
+          <dt class="text-xs text-muted-foreground">{{ t("inspector.reclaimable") }}</dt>
           <dd class="text-xs text-reclaim">
             <ByteValue :bytes="reclaimableOf(selectedRow)" />
           </dd>
         </div>
         <div v-if="artifactBytes(selectedRow) > 0" class="flex items-baseline justify-between gap-2">
-          <dt class="text-xs text-muted-foreground">构建产物</dt>
+          <dt class="text-xs text-muted-foreground">{{ t("inspector.artifacts") }}</dt>
           <dd class="text-xs"><ByteValue :bytes="artifactBytes(selectedRow)" /></dd>
         </div>
       </dl>
 
       <template v-if="detailEntries.length || artifactRows.length">
         <template v-if="detailEntries.length">
-          <h3 class="mt-4 border-t border-border/60 pt-3 text-[11px] font-medium text-muted-foreground">明细</h3>
+          <h3 class="mt-4 border-t border-border/60 pt-3 text-[11px] font-medium text-muted-foreground">{{ t("inspector.details") }}</h3>
           <dl class="mt-2 space-y-3">
             <div v-for="[k, v] in detailEntries" :key="k">
               <dt class="text-[11px] text-muted-foreground [overflow-wrap:anywhere]">{{ detailLabel(k) }}</dt>
@@ -174,8 +176,8 @@ function detailLabel(key: string): string {
                node_modules` 与 `apps/desktop/node_modules` 会在行内截成同一个串。
                标题这一个图标 + 整行 hover 淡底，代价为零。 -->
           <div class="mt-4 flex items-center gap-1.5 border-t border-border/60 pt-3">
-            <h3 class="text-[11px] font-medium text-muted-foreground">产物明细</h3>
-            <Hint :text="`${revealLabel}：点任意一行`">
+            <h3 class="text-[11px] font-medium text-muted-foreground">{{ t("inspector.artifactDetails") }}</h3>
+            <Hint :text="t('inspector.revealHint', { label: revealLabel() })">
               <FolderOpen class="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
             </Hint>
           </div>
@@ -186,7 +188,7 @@ function detailLabel(key: string): string {
           <ul class="mt-1 text-[11px]">
             <li v-for="r in artifactRows" :key="r.relative_path" class="leading-[18px]">
               <!-- 整行是按钮：点一下在访达 / 资源管理器里定位这个产物目录 -->
-              <Hint :text="`${revealLabel} · ${r.relative_path}`" side="left">
+              <Hint :text="t('inspector.revealRow', { label: revealLabel(), path: r.relative_path })" side="left">
                 <button
                   type="button"
                   class="flex w-full items-baseline gap-2 rounded-sm text-left px-1 transition-colors duration-[90ms] hover:bg-[var(--ink-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -203,7 +205,7 @@ function detailLabel(key: string): string {
               </Hint>
             </li>
             <li v-if="artifactOmitted" class="text-[11px] leading-[18px] text-muted-foreground">
-              …其余 {{ artifactOmitted }} 个目录略
+              {{ t("inspector.omitted", { count: artifactOmitted }) }}
             </li>
           </ul>
         </template>
@@ -211,10 +213,10 @@ function detailLabel(key: string): string {
     </template>
 
     <template v-else>
-      <h2 class="text-[14px] font-semibold leading-snug">{{ group.label }}</h2>
+      <h2 class="text-[14px] font-semibold leading-snug">{{ renderText(group.label) }}</h2>
       <!-- 整组摘要保留一份；状态栏在筛选后展示的是筛后口径。 -->
       <p v-if="group.summary" class="mt-2 text-pretty text-xs leading-relaxed text-foreground [overflow-wrap:anywhere]">
-        {{ group.summary }}
+        {{ renderText(group.summary) }}
       </p>
       <div v-if="group.notes?.length" class="mt-4 space-y-3 border-t border-border/60 pt-3">
         <p
@@ -222,7 +224,7 @@ function detailLabel(key: string): string {
           :key="i"
           class="text-[11px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]"
         >
-          {{ n }}
+          {{ renderText(n) }}
         </p>
       </div>
       <!-- 清理规则默认收起。这三条讲的是「本工具怎么判可清理」，常驻等于把 README 塞进
@@ -238,28 +240,20 @@ function detailLabel(key: string): string {
             class="size-3 shrink-0 transition-transform"
             :class="rulesOpen ? 'rotate-90' : ''"
           />
-          清理规则
+          {{ t("inspector.cleanRules") }}
         </button>
         <div class="rules" :class="{ open: rulesOpen }" :aria-hidden="!rulesOpen">
           <div>
             <ul class="mt-1 space-y-1.5 text-[11px] leading-relaxed text-muted-foreground">
-              <li>
-                「可清理」行可在检查器里发起清理（移入废纸篓）；带构建产物的仓库可以只清产物（node_modules
-                / target 等，源码保留）。
-              </li>
-              <li>
-                工具链缓存里那些有官方清理命令的行不标「可清理」——命令写在明细里，请自己运行，它比搬走整个目录精确。
-              </li>
-              <li>
-                编辑器与 AI
-                工具按「工具 × 类别」清日志 / 会话 / 缓存；会话含完整对话记录，删除后不会自动重建。
-              </li>
+              <li>{{ t("inspector.rule1") }}</li>
+              <li>{{ t("inspector.rule2") }}</li>
+              <li>{{ t("inspector.rule3") }}</li>
             </ul>
           </div>
         </div>
       </template>
       <p v-else-if="reclaimTotal > 0" class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-        本组只读：账面可回收不等于有删除入口。
+        {{ t("inspector.readOnly") }}
       </p>
     </template>
   </div>

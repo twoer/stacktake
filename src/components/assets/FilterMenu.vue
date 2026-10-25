@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { ListFilter } from "@lucide/vue";
 import type { Dimension } from "@/lib/assets";
+import { t } from "@/lib/i18n";
 import Hint from "@/components/Hint.vue";
 
 /**
@@ -43,10 +44,10 @@ const toolbarCtl =
        此前是「每个维度一个描边按钮 + 一个清空按钮」，分组多时工具栏一排小盒子，
        线条感的主场；合并成一个入口也就不必给每个维度留位置。 -->
   <div class="relative shrink-0" data-dim-menu>
-    <Hint :text="anyFilter ? `筛选（已生效 ${activeDims} 项）` : '筛选'">
+    <Hint :text="anyFilter ? t('filter.active', { count: activeDims }) : t('filter.label')">
       <button
         :class="[toolbarCtl, anyFilter || open ? 'bg-muted text-foreground' : '']"
-        aria-label="筛选"
+        :aria-label="t('filter.label')"
         :aria-expanded="open"
         aria-controls="asset-filters"
         @click="emit('toggle')"
@@ -74,22 +75,24 @@ const toolbarCtl =
         >
           <span class="flex min-w-0 items-center gap-2">
             <span class="filter-dot" :class="!dims[d.key] ? 'on' : ''" />
-            <span>全部</span>
+            <span>{{ t("common.all") }}</span>
           </span>
           <span class="tabular-nums text-muted-foreground">{{ countFor(d.key, null) }}</span>
         </button>
+        <!-- 选项两半：`value` 是后端词表里的取值（筛选比较与计数口径都用它），
+             `label` 是给人看的展示名。切语言只换 label，选中状态不会掉。 -->
         <button
-          v-for="v in d.options"
-          :key="v"
+          v-for="o in d.options"
+          :key="o.value"
           class="flex w-full items-center justify-between gap-3 px-2 py-1 text-left text-xs text-foreground hover:bg-muted"
-          :class="dims[d.key] === v ? 'font-medium' : ''"
-          @click="emit('set', d.key, v)"
+          :class="dims[d.key] === o.value ? 'font-medium' : ''"
+          @click="emit('set', d.key, o.value)"
         >
           <span class="flex min-w-0 items-center gap-2">
-            <span class="filter-dot" :class="dims[d.key] === v ? 'on' : ''" />
-            <span class="truncate">{{ v }}</span>
+            <span class="filter-dot" :class="dims[d.key] === o.value ? 'on' : ''" />
+            <span class="truncate">{{ o.label }}</span>
           </span>
-          <span class="tabular-nums text-muted-foreground">{{ countFor(d.key, v) }}</span>
+          <span class="tabular-nums text-muted-foreground">{{ countFor(d.key, o.value) }}</span>
         </button>
       </template>
       <div v-if="anyFilter" class="mt-1 border-t border-border/60 pt-1">
@@ -97,7 +100,7 @@ const toolbarCtl =
           class="flex w-full items-center px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           @click="emit('clear')"
         >
-          清除筛选条件
+          {{ t("filter.clear") }}
         </button>
       </div>
     </div>

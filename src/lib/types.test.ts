@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import type { Item } from "@/lib/types";
+import { beforeAll, describe, expect, it } from "vitest";
+import type { AssetGroup, Item } from "@/lib/types";
+import { applyLocale } from "@/lib/i18n";
 import {
   artifactBytes,
   formatAgo,
@@ -16,6 +17,9 @@ import {
 
 // D16 登记点名的盲区：字节换算与时间读数是账本上每一行都要过的两个纯函数，
 // 还有「顶层 reclaimable 优先」「artifactBytes 只认 b 不认 i」这类口径差异。
+// 这些断言钉的是中文读数口径；语言是全局状态，显式钉住，别跟着跑测试的机器走。
+beforeAll(() => applyLocale("zh-CN"));
+
 const item = (over: Partial<Item> = {}): Item => ({
   id: "/tmp/repo-a",
   tags: [],
@@ -55,8 +59,8 @@ describe("metricValue / itemSize / artifactBytes / reclaimableOf —— 取值�
   });
 
   it("groupSize 全加；groupReclaimable 只加 cleanable 行（与 Rust total_reclaimable 同口径）", () => {
-    const g = {
-      id: "repos", label: "", summary: "", fields: [],
+    const g: AssetGroup = {
+      id: "repos", label: { t: "k", v: "data.group.repos" }, summary: { t: "r", v: "" }, fields: [],
       items: [
         item({ metrics: { size: { t: "b", v: 10 } }, cleanable: true, reclaimable: 10 }),
         item({ metrics: { size: { t: "b", v: 20 } } }),
@@ -105,16 +109,17 @@ describe("formatAgo —— 人话时间读数（传时间针，不依赖墙钟�
   });
 
   it("分 / 时 / 天 / 月 / 年的档位与边界", () => {
-    expect(formatAgo(now - 60, now)).toBe("1 分钟前");
-    expect(formatAgo(now - 3599, now)).toBe("59 分钟前");
-    expect(formatAgo(now - 3600, now)).toBe("1 小时前");
-    expect(formatAgo(now - 86399, now)).toBe("23 小时前");
-    expect(formatAgo(now - 86400, now)).toBe("1 天前");
-    expect(formatAgo(now - 29 * 86400, now)).toBe("29 天前");
-    expect(formatAgo(now - 30 * 86400, now)).toBe("1 个月前");
-    expect(formatAgo(now - 359 * 86400, now)).toBe("11 个月前");
-    expect(formatAgo(now - 365 * 86400, now)).toBe("1 年前");
-    expect(formatAgo(now - 730 * 86400, now)).toBe("2 年前");
+    // 读数交给 Intl.RelativeTimeFormat：zh-CN 的数字与单位之间没有空格
+    expect(formatAgo(now - 60, now)).toBe("1分钟前");
+    expect(formatAgo(now - 3599, now)).toBe("59分钟前");
+    expect(formatAgo(now - 3600, now)).toBe("1小时前");
+    expect(formatAgo(now - 86399, now)).toBe("23小时前");
+    expect(formatAgo(now - 86400, now)).toBe("1天前");
+    expect(formatAgo(now - 29 * 86400, now)).toBe("29天前");
+    expect(formatAgo(now - 30 * 86400, now)).toBe("1个月前");
+    expect(formatAgo(now - 359 * 86400, now)).toBe("11个月前");
+    expect(formatAgo(now - 365 * 86400, now)).toBe("1年前");
+    expect(formatAgo(now - 730 * 86400, now)).toBe("2年前");
   });
 });
 
@@ -125,7 +130,7 @@ describe("formatMetric / formatMetricBytes —— 按标签分派", () => {
     expect(formatMetric({ t: "s", v: "main" })).toBe("main");
     expect(formatMetric({ t: "i", v: 1234 })).toBe("1,234");
     // temporal 路径走 formatAgo 的默认墙钟，取相对 now 的值（绝对值见 formatAgo 自己的用例）
-    expect(formatMetric({ t: "i", v: Math.floor(Date.now() / 1000) - 60 }, true)).toBe("1 分钟前");
+    expect(formatMetric({ t: "i", v: Math.floor(Date.now() / 1000) - 60 }, true)).toBe("1分钟前");
   });
 
   it("体积列专用：b 走字节换算，其余按通用分派", () => {

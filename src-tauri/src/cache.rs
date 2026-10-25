@@ -83,7 +83,7 @@ use std::path::{Path, PathBuf};
 /// - **补充目录进信封**（`extra_repo_roots`）：信封新增字段且**没有** `serde(default)`，
 ///   老缓存反序列化直接失败、等于自动失效——但仍要登记：哪天为了兼容性给它加上
 ///   default，这条就是「那时必须换个失效办法」的依据。
-pub const SCHEMA_VERSION: u32 = 19;
+pub const SCHEMA_VERSION: u32 = 20;
 
 const CACHE_FILE: &str = "scan-cache.json";
 
@@ -134,10 +134,13 @@ pub fn load(app_data_dir: &Path) -> Option<CachedSnapshot> {
     let config_error = match crate::roots::load_extra(app_data_dir) {
         Ok(extra) if extra != env.extra_repo_roots => {
             env.extra_repo_roots = extra;
-            Some("扫描目录已更改，请重扫 Git 仓库".to_string())
+            Some(crate::scan::Text::key("data.error.repoRootsChanged"))
         }
         Ok(_) => None,
-        Err(e) => Some(format!("无法读取 Git 仓库补充目录：{e}")),
+        Err(e) => Some(
+            crate::scan::Text::fmt("data.error.repoRootsRead")
+                .arg("error", crate::scan::Text::raw(e.to_string())),
+        ),
     };
     if let Some(message) = config_error
         && let Some(repos) = env.groups.iter_mut().find(|g| g.id == "repos")
@@ -148,14 +151,10 @@ pub fn load(app_data_dir: &Path) -> Option<CachedSnapshot> {
         repos.supports_clean = false;
         let roots =
             crate::roots::merged_roots(crate::roots::default_roots(), &env.extra_repo_roots);
-        repos.notes = Some(vec![format!(
-            "扫描根目录：{}",
-            roots
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join("、")
-        )]);
+        repos.notes = Some(vec![
+            crate::scan::Text::fmt("data.note.reposRoots")
+                .arg("roots", crate::scan::repos::display_roots(&roots)),
+        ]);
     }
 
     let age = now_secs() - env.saved_at;

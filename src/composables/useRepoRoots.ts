@@ -2,6 +2,7 @@ import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "vue-sonner";
 import type { RepoRoots, RepoRootsError, ScanResult } from "@/lib/types";
+import { t } from "@/lib/i18n";
 import { useAssets } from "@/composables/useAssets";
 
 // 设置页与仓库空态共用配置、错误和互斥状态，切页不会丢失正在进行的操作。
@@ -14,7 +15,9 @@ async function readRoots() {
     roots.value = await invoke<RepoRoots>("get_repo_roots");
   } catch (e) {
     // 读失败不能伪装成「没有补充目录」，也不能覆盖刚才的操作错误。
-    const message = `目录配置读取失败${roots.value ? "（保留上次读取结果）" : ""}：${String(e)}`;
+    const message = roots.value
+      ? t("repoRoots.readFailedKept", { message: String(e) })
+      : t("repoRoots.readFailed", { message: String(e) });
     error.value = error.value ? `${error.value}\n${message}` : message;
   }
 }
@@ -72,9 +75,7 @@ export function useRepoRoots() {
     if (failure) {
       toast.error(failure);
     } else if (next) {
-      toast.success(action === "adding"
-        ? "已补充目录 · Git 仓库已刷新"
-        : "已取消扫描该目录 · 未删除文件 · Git 仓库已刷新");
+      toast.success(action === "adding" ? t("repoRoots.added") : t("repoRoots.removed"));
       if (error.value) toast.error(error.value);
     }
     // null 只表示取消原生选择器，不扫描，也不提示成功。

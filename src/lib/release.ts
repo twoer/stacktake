@@ -18,6 +18,8 @@
  * 报错，界面上什么都没有，看起来就像网络不通。改 CSP 时别只删这一句。
  */
 
+import { t } from "@/lib/i18n";
+
 const REPO = "twoer/stacktake";
 const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 /** 兜底：自动打开失败或没有本平台的包时，让用户自己去 GitHub 挑 dmg / exe。 */
@@ -73,10 +75,10 @@ export async function checkForUpdate(current: string): Promise<CheckResult> {
     // 上去、或网络被代理挡了都可能是这个码。此时按「没有可用更新」处理，
     // 让启动那次检查彻底无声；真要排查，设置页手动点一次能看到具体状态。
     if (res.status === 404) return { kind: "up-to-date", current };
-    if (!res.ok) return { kind: "error", message: `GitHub 返回 ${res.status}` };
+    if (!res.ok) return { kind: "error", message: t("release.githubStatus", { status: res.status }) };
     const data = (await res.json()) as { tag_name?: string };
     const latest = data.tag_name?.trim();
-    if (!latest) return { kind: "error", message: "响应里没有 tag_name" };
+    if (!latest) return { kind: "error", message: t("release.missingTag") };
     return isNewer(latest, current)
       ? { kind: "available", current, latest }
       : { kind: "up-to-date", current };

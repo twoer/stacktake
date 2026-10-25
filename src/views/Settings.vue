@@ -6,9 +6,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "vue-sonner";
 import { formatAgo } from "@/lib/types";
+import { LOCALE_OPTIONS, type AppLocale } from "@/lib/locale";
+import { t } from "@/lib/i18n";
 import { ISSUES_URL, LICENSE_URL, REPO_URL } from "@/lib/release";
 import { useAssets } from "@/composables/useAssets";
 import { useAutoScan } from "@/composables/useAutoScan";
+import { useLocale } from "@/composables/useLocale";
 import { useRepoRoots } from "@/composables/useRepoRoots";
 import { useTheme } from "@/composables/useTheme";
 import { useUpdate } from "@/composables/useUpdate";
@@ -39,11 +42,24 @@ function onAutoScanChange(value: boolean | "indeterminate") {
 }
 
 const { preference: themePreference, setPreference: setThemePreference } = useTheme();
-const THEME_OPTIONS = [
-  { value: "system", label: "自动（跟随系统）" },
-  { value: "light", label: "浅色" },
-  { value: "dark", label: "深色" },
-] as const;
+const THEME_OPTIONS = computed(() => [
+  { value: "system" as const, label: t("settings.appearance.auto") },
+  { value: "light" as const, label: t("settings.appearance.light") },
+  { value: "dark" as const, label: t("settings.appearance.dark") },
+]);
+
+// 语言名本身不翻译（English / Español / 日本語 …），只有「跟随系统」那句随界面语言走。
+const { preference: localePreference, resolved: localeResolved, setPreference: setLocalePreference } =
+  useLocale();
+const endonym = (value: AppLocale) =>
+  LOCALE_OPTIONS.find((opt) => opt.value === value)?.label ?? value;
+const LANGUAGE_OPTIONS = computed(() => [
+  {
+    value: "system" as const,
+    label: t("settings.language.systemWith", { language: endonym(localeResolved.value) }),
+  },
+  ...LOCALE_OPTIONS,
+]);
 
 // 与侧栏共享同一份状态：App.vue 启动那次静默检查的结果这里直接读到，
 // 不重复发请求。手动点「检查更新」才再查一次。
@@ -68,7 +84,7 @@ async function clearCache() {
     // 清空内存里的数据，让侧栏和主区立刻反映"无缓存"状态
     groups.value = [];
     cachedAt.value = null;
-    toast.success("缓存已清空 · 请点下方「立即重扫」刷新数据");
+    toast.success(t("settings.cache.clearedToast"));
   } catch (e) {
     toast.error(String(e));
   }
@@ -78,7 +94,7 @@ async function clearCache() {
 async function rescanNow() {
   const r = await rescan();
   if (r.ok) {
-    toast.success("重扫完成");
+    toast.success(t("settings.cache.rescanDone"));
     router.push("/assets");
   } else {
     toast.error(r.message);
@@ -119,7 +135,7 @@ const dlPct = computed(() => {
          此前是 h-10 + px-4 + border-border + 13px medium，切页时标题基线跳 4px、
          正文左缘错 4px、底边线深一档。 -->
     <div class="flex h-11 shrink-0 items-center border-b border-border/40 bg-background px-3" data-tauri-drag-region>
-      <h1 class="text-sm font-semibold">设置</h1>
+      <h1 class="text-sm font-semibold">{{ t("settings.title") }}</h1>
       <div class="flex-1" />
     </div>
     <!-- 顶部进度条：只画扫描。这里一度让下载也挤进来共用一条（扫描完就原地改写
@@ -133,21 +149,60 @@ const dlPct = computed(() => {
 
     <ScrollArea class="min-h-0 flex-1">
       <div class="mx-auto max-w-[600px] space-y-8 px-4 py-5 text-[12px]">
-        <section aria-labelledby="appearance-heading">
-          <h2 id="appearance-heading" class="text-[13px] font-medium">外观</h2>
+        <section aria-labelledby="language-heading">
+          <h2 id="language-heading" class="text-[13px] font-medium">{{ t("settings.language.heading") }}</h2>
           <p class="mt-1 leading-relaxed text-muted-foreground">
-            「自动」跟随系统外观；手动选择后固定。
+            {{ t("settings.language.hint") }}
           </p>
-          <!-- 原生 radio 保留键盘方向键与读屏语义，视觉收成一条等宽轨道 -->
           <fieldset class="mt-3">
-            <legend class="sr-only">外观模式</legend>
+            <legend class="sr-only">{{ t("settings.language.legend") }}</legend>
+            <!-- 单行自适应宽度、放不下才折行：等宽网格把六项摊成两排大块，
+                 高度是外观那条轨道的一倍，视觉上压过了它。 -->
             <div
-              class="inline-grid grid-flow-col auto-cols-fr rounded-md border border-border/60 bg-muted/60 p-0.5"
+              class="inline-flex max-w-full flex-wrap gap-0.5 rounded-md border border-border/60 bg-muted/60 p-0.5"
+            >
+              <label
+                v-for="opt in LANGUAGE_OPTIONS"
+                :key="opt.value"
+                class="inline-flex h-6 cursor-pointer select-none items-center justify-center rounded-sm px-2.5 text-[11px] transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
+                :class="
+                  localePreference === opt.value
+                    ? 'bg-card text-foreground shadow-sm ring-1 ring-border/60'
+                    : 'text-muted-foreground hover:text-foreground'
+                "
+              >
+                <input
+                  type="radio"
+                  name="language"
+                  class="sr-only"
+                  :value="opt.value"
+                  :checked="localePreference === opt.value"
+                  @change="setLocalePreference(opt.value)"
+                />
+                {{ opt.label }}
+              </label>
+            </div>
+          </fieldset>
+        </section>
+
+        <section aria-labelledby="appearance-heading" class="border-t border-border pt-6">
+          <h2 id="appearance-heading" class="text-[13px] font-medium">{{ t("settings.appearance.heading") }}</h2>
+          <p class="mt-1 leading-relaxed text-muted-foreground">
+            {{ t("settings.appearance.hint") }}
+          </p>
+          <!-- 原生 radio 保留键盘方向键与读屏语义，视觉收成一条等宽轨道。
+               标签不折行：24px 的段内放不下第二行，折出来的字会溢到轨道外
+               （es 的「Automático (seguir al sistema)」踩过）。真放不下时
+               宁可让外层换行，也别把一句话劈成两行塞进 24px。 -->
+          <fieldset class="mt-3">
+            <legend class="sr-only">{{ t("settings.appearance.legend") }}</legend>
+            <div
+              class="inline-grid max-w-full grid-flow-col auto-cols-fr rounded-md border border-border/60 bg-muted/60 p-0.5"
             >
               <label
                 v-for="opt in THEME_OPTIONS"
                 :key="opt.value"
-                class="inline-flex h-6 cursor-pointer select-none items-center justify-center rounded-sm px-3 text-xs transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
+                class="inline-flex h-6 cursor-pointer select-none items-center justify-center whitespace-nowrap rounded-sm px-3 text-xs transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
                 :class="
                   themePreference === opt.value
                     ? 'bg-card text-foreground shadow-sm ring-1 ring-border/60'
@@ -169,64 +224,65 @@ const dlPct = computed(() => {
         </section>
 
         <section aria-labelledby="repo-roots-heading" class="border-t border-border pt-6" :aria-busy="!!repoRootsPending">
-          <h2 id="repo-roots-heading" class="text-[13px] font-medium">Git 仓库扫描目录</h2>
+          <h2 id="repo-roots-heading" class="text-[13px] font-medium">{{ t("settings.repoRoots.heading") }}</h2>
           <p class="mt-1 leading-relaxed text-muted-foreground">
-            补充仓库所在的父目录，添加或移除后只刷新 Git 仓库。
+            {{ t("settings.repoRoots.hint") }}
           </p>
           <template v-if="repoRoots">
-            <h3 class="mt-3 text-[11px] text-muted-foreground">默认目录 · 只读</h3>
+            <h3 class="mt-3 text-[11px] text-muted-foreground">{{ t("settings.repoRoots.defaultRoots") }}</h3>
             <ul class="mt-1">
               <li v-for="path in repoRoots.default_roots" :key="path" class="border-b border-border/40 py-1.5">
                 <span class="select-text font-mono text-[11px] [overflow-wrap:anywhere]">{{ path }}</span>
               </li>
             </ul>
-            <p v-if="!repoRoots.default_roots.length" class="mt-1 text-[11px] text-muted-foreground">未找到默认目录</p>
-            <h3 class="mt-3 text-[11px] text-muted-foreground">补充目录</h3>
+            <p v-if="!repoRoots.default_roots.length" class="mt-1 text-[11px] text-muted-foreground">{{ t("settings.repoRoots.notFound") }}</p>
+            <h3 class="mt-3 text-[11px] text-muted-foreground">{{ t("settings.repoRoots.extraRoots") }}</h3>
             <ul class="mt-1">
               <li v-for="root in repoRoots.extra_roots" :key="root.path" class="flex items-start gap-2 border-b border-border/40 py-1.5">
                 <div class="min-w-0 flex-1">
                   <p class="select-text font-mono text-[11px] leading-6 [overflow-wrap:anywhere]">{{ root.path }}</p>
-                  <p v-if="!root.available" class="text-[11px] text-muted-foreground">目录不可用</p>
+                  <p v-if="!root.available" class="text-[11px] text-muted-foreground">{{ t("settings.repoRoots.unavailable") }}</p>
                 </div>
-                <Hint text="仅取消扫描，不删除文件">
+                <Hint :text="t('settings.repoRoots.removeHint')">
                   <Button
                     variant="ghost"
                     size="xs"
                     class="shrink-0 text-muted-foreground"
                     :disabled="repoRootsBusy || dlState === 'downloading'"
-                    :aria-label="`取消扫描 ${root.path}，不删除文件`"
+                    :aria-label="t('settings.repoRoots.removeAria', { path: root.path })"
                     @click="removeRoot(root.path)"
-                  >移除</Button>
+                  >{{ t("settings.repoRoots.remove") }}</Button>
                 </Hint>
               </li>
             </ul>
-            <p v-if="!repoRoots.extra_roots.length" class="mt-1 text-[11px] text-muted-foreground">尚未补充目录</p>
+            <p v-if="!repoRoots.extra_roots.length" class="mt-1 text-[11px] text-muted-foreground">{{ t("settings.repoRoots.noExtra") }}</p>
           </template>
-          <p v-if="repoRootsPending === 'loading'" role="status" class="mt-3 text-[11px] text-muted-foreground">正在读取扫描目录…</p>
+          <p v-if="repoRootsPending === 'loading'" role="status" class="mt-3 text-[11px] text-muted-foreground">{{ t("settings.repoRoots.reading") }}</p>
           <div v-if="repoRootsError" class="mt-3 text-[11px]">
             <p role="alert" class="whitespace-pre-line text-destructive [overflow-wrap:anywhere]">{{ repoRootsError }}</p>
             <Button variant="ghost" size="xs" class="mt-1 text-muted-foreground" :disabled="repoRootsBusy" @click="loadRoots">
               <RefreshCw aria-hidden="true" />
-              重新读取目录
+              {{ t("settings.repoRoots.reread") }}
             </Button>
           </div>
           <div class="mt-3 flex flex-wrap items-center gap-2">
             <Button variant="outline" size="xs" :disabled="repoRootsBusy || !repoRoots || dlState === 'downloading'" @click="addRoot">
               <FolderPlus aria-hidden="true" />
-              补充目录
+              {{ t("settings.repoRoots.add") }}
             </Button>
-            <span v-if="repoRootsPending === 'adding' || repoRootsPending === 'removing'" role="status" class="text-[11px] text-muted-foreground">正在更新目录…</span>
+            <span v-if="repoRootsPending === 'adding' || repoRootsPending === 'removing'" role="status" class="text-[11px] text-muted-foreground">{{ t("settings.repoRoots.updating") }}</span>
           </div>
-          <p class="mt-2 text-[11px] leading-relaxed text-muted-foreground">移除仅取消扫描，不会删除目录或文件。</p>
+          <p class="mt-2 text-[11px] leading-relaxed text-muted-foreground">{{ t("settings.repoRoots.footnote") }}</p>
         </section>
 
         <!-- ============ 缓存 ============ -->
         <section class="border-t border-border pt-6">
-          <h2 class="text-[13px] font-medium">缓存</h2>
+          <h2 class="text-[13px] font-medium">{{ t("settings.cache.heading") }}</h2>
           <p class="mt-1 leading-relaxed text-muted-foreground">
-            扫描结果存在本机缓存里，启动直接读（毫秒级）；只有首次运行、缓存被清，
-            或缓存里最旧的分组超过 24 小时时才真扫。
-            当前数据更新于 <span class="tabular-nums">{{ cachedAtLabel }}</span>。
+            {{ t("settings.cache.hint") }}
+          </p>
+          <p class="mt-1 leading-relaxed text-muted-foreground">
+            {{ t("settings.cache.updated", { ago: cachedAtLabel }) }}
           </p>
           <!-- 勾选框与文案整行可点：for 指向 Checkbox 的 button，label 的激活行为
                会转成一次 click。别把 click 也挂到外层，否则一次点击切两下。 -->
@@ -240,18 +296,17 @@ const dlPct = computed(() => {
               @update:model-value="onAutoScanChange"
             />
             <label for="auto-scan" class="min-w-0 cursor-pointer select-none">
-              <span id="auto-scan-label" class="block text-xs">缓存超过 24 小时时，启动自动重扫</span>
+              <span id="auto-scan-label" class="block text-xs">{{ t("settings.cache.autoLabel") }}</span>
               <span id="auto-scan-hint" class="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
-                启动先显示缓存，再在后台重扫一次（约 26 秒），期间照常浏览；
-                关掉后只在首次运行或手动重扫时更新。
+                {{ t("settings.cache.autoHint") }}
               </span>
             </label>
           </div>
           <!-- 缓存被清空后的引导态：groups 为空且 cachedAt 为 null 时显示 -->
           <div v-if="!cachedAt && groups.length === 0" class="mt-3 rounded-md border border-border/40 bg-muted/40 px-3 py-2.5">
-            <p class="text-xs font-medium text-foreground">缓存已清空</p>
+            <p class="text-xs font-medium text-foreground">{{ t("settings.cache.clearedTitle") }}</p>
             <p class="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-              点下方「立即重扫」开始扫描，或重启应用自动扫描。
+              {{ t("settings.cache.clearedHint") }}
             </p>
           </div>
           <div class="mt-3 flex items-center gap-1.5">
@@ -259,26 +314,23 @@ const dlPct = computed(() => {
                  同色同粗细的两条墨线同时在屏上会让人分不清谁是谁。 -->
             <Button variant="outline" size="xs" :disabled="scanning || dlState === 'downloading'" @click="rescanNow">
               <RefreshCw />
-              立即重扫
+              {{ t("settings.cache.rescanNow") }}
             </Button>
             <Button variant="ghost" size="xs" class="text-muted-foreground" :disabled="scanning" @click="clearCache">
               <Trash2 />
-              清空缓存
+              {{ t("settings.cache.clear") }}
             </Button>
           </div>
           <p class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-            全量扫描约 26 秒（实测值出处见 README「扫描策略」）。清空缓存不删任何资产数据，
-            只是下次启动重新扫一遍。
+            {{ t("settings.cache.footnote") }}
           </p>
         </section>
 
         <!-- ============ 更新 ============ -->
         <section class="border-t border-border pt-6">
-          <h2 class="text-[13px] font-medium">更新</h2>
+          <h2 class="text-[13px] font-medium">{{ t("settings.update.heading") }}</h2>
           <p class="mt-1 leading-relaxed text-muted-foreground">
-            当前版本 <span class="tabular-nums">v{{ appVersion || "—" }}</span>。
-            查出新版本后点「下载」直接获取本平台的安装包——仍在应用内下载、
-            不静默安装：下完自动打开安装包，装不装、什么时候装由你最后一步决定。
+            {{ t("settings.update.hint", { version: appVersion || "—" }) }}
           </p>
 
           <!-- 下载进度：节内一条 ScanBar + 12px 正文字号的百分比。
@@ -289,11 +341,11 @@ const dlPct = computed(() => {
                （原因见上方顶部进度条的注释）。滚出视野的代价已经用「下载按钮期间互斥」
                的方式降掉了——同一时刻页面上只可能有这一进度在进行。 -->
           <div v-if="dlState === 'downloading'" class="mt-3">
-            <ScanBar :pct="dlPct" label="下载进度" />
+            <ScanBar :pct="dlPct" :label="t('settings.update.downloadProgress')" />
             <p class="mt-1.5 text-[12px] leading-relaxed text-foreground">
-              下载中…
+              {{ t("settings.update.downloading") }}
               <span class="font-medium tabular-nums">
-                {{ dlProgress?.total ? `${dlPct}%` : "已接收" }}
+                {{ dlProgress?.total ? `${dlPct}%` : t("settings.update.received") }}
               </span>
               <span class="text-muted-foreground">
                 （<ByteValue class="tabular-nums" :bytes="dlProgress?.received ?? 0" /><template
@@ -305,10 +357,10 @@ const dlPct = computed(() => {
             </p>
           </div>
           <p v-else-if="dlState === 'done' && dlPath" class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-            已下载并打开：<span class="tabular-nums">{{ dlPath }}</span>
+            {{ t("settings.update.downloaded", { path: dlPath }) }}
           </p>
           <p v-else-if="dlMessage" class="mt-2 text-[11px] leading-relaxed text-destructive">
-            下载失败：{{ dlMessage }}
+            {{ t("settings.update.failed", { message: dlMessage }) }}
           </p>
 
           <!-- 检查状态跟在按钮后面（与「补充目录」那行同一形态）：idle 不写任何东西。
@@ -322,7 +374,7 @@ const dlPct = computed(() => {
               @click="checkNow"
             >
               <RefreshCw />
-              检查更新
+              {{ t("settings.update.check") }}
             </Button>
             <Button
               v-if="updateState === 'available' && dlState !== 'downloading'"
@@ -331,57 +383,54 @@ const dlPct = computed(() => {
               @click="downloadUpdate"
             >
               <Download />
-              下载 {{ latest }}
+              {{ t("settings.update.download", { version: latest }) }}
             </Button>
             <span
               v-if="updateState !== 'idle'"
               class="min-w-0 text-[11px] leading-relaxed [overflow-wrap:anywhere]"
             >
               <template v-if="updateState === 'checking'">
-                <span class="text-muted-foreground">正在检查…</span>
+                <span class="text-muted-foreground">{{ t("settings.update.checking") }}</span>
               </template>
               <template v-else-if="updateState === 'available'">
-                <span class="text-primary">有新版本 {{ latest }}</span>
-                <span class="text-muted-foreground">—— 点「下载」直接获取。</span>
+                <span class="text-primary">{{ t("settings.update.available", { version: latest }) }}</span>
+                <span class="text-muted-foreground">{{ t("settings.update.availableHint") }}</span>
               </template>
               <template v-else-if="updateState === 'up-to-date'">
-                <span class="text-muted-foreground">已是最新。</span>
+                <span class="text-muted-foreground">{{ t("settings.update.upToDate") }}</span>
               </template>
               <template v-else-if="updateState === 'error'">
-                <span class="text-destructive">检查失败：{{ updateError }}</span>
+                <span class="text-destructive">{{ t("settings.update.checkFailed", { message: updateError }) }}</span>
               </template>
             </span>
           </div>
           <p class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-            安装包下载到「下载」文件夹并自动打开。检查与下载都不经浏览器：检查只请求
-            api.github.com，安装包从 GitHub 的发布资产直取，都不带本机任何数据。
-            macOS 的安装包没有 Apple 开发者签名，双击后若被系统拦下，右键→打开即可；
-            自动打开失败或没有本平台的包时，可<button
+            {{ t("settings.update.footnoteBefore")
+            }}<button
               class="rounded text-primary hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               @click="openDownload"
-            >前往下载页</button>手动获取。
+            >{{ t("settings.update.footnoteLink") }}</button>{{ t("settings.update.footnoteAfter") }}
           </p>
         </section>
 
         <!-- ============ 项目 ============ -->
         <section class="border-t border-border pt-6">
-          <h2 class="text-[13px] font-medium">项目</h2>
+          <h2 class="text-[13px] font-medium">{{ t("settings.project.heading") }}</h2>
           <p class="mt-1 leading-relaxed text-muted-foreground">
-            Stacktake 以 MIT 协议开源，源码、issue 与协议文本都在 GitHub 上。
-            下面几个链接交给系统浏览器打开，应用不为此多发任何请求。
+            {{ t("settings.project.hint") }}
           </p>
           <div class="mt-3 flex items-center gap-1.5">
             <Button variant="outline" size="xs" @click="openLink(REPO_URL)">
               <Code />
-              仓库主页
+              {{ t("settings.project.repo") }}
             </Button>
             <Button variant="ghost" size="xs" class="text-muted-foreground" @click="openLink(ISSUES_URL)">
               <MessageSquare />
-              反馈问题
+              {{ t("settings.project.issues") }}
             </Button>
             <Button variant="ghost" size="xs" class="text-muted-foreground" @click="openLink(LICENSE_URL)">
               <Scale />
-              开源协议
+              {{ t("settings.project.license") }}
             </Button>
           </div>
         </section>

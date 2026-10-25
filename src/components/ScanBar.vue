@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { t } from "@/lib/i18n";
 
 /** `label` 只为无障碍：扫描与下载共用这一条，读屏软件要说对正在发生什么。
+ *  缺省文案在模板里取 `t()`——属性默认值在模块加载时求值，会把语言锁死。
  *  `indeterminate`：单组重扫只有 0→1 两个事件，没有中间比例可画，改走来回扫的
  *  墨线（样式见 style.css 的 scanbar--indet）。 */
 const props = withDefaults(
   defineProps<{ pct: number; label?: string; indeterminate?: boolean }>(),
-  { label: "扫描进度", indeterminate: false },
+  { label: undefined, indeterminate: false },
 );
 const clamped = computed(() => Math.max(0, Math.min(100, props.pct)));
 </script>
@@ -18,7 +20,7 @@ const clamped = computed(() => Math.max(0, Math.min(100, props.pct)));
     class="scanbar"
     :class="indeterminate ? 'scanbar--indet' : ''"
     role="progressbar"
-    :aria-label="props.label"
+    :aria-label="props.label ?? t('assets.scanProgress')"
     :aria-valuenow="indeterminate ? undefined : Math.round(clamped)"
     aria-valuemin="0"
     aria-valuemax="100"

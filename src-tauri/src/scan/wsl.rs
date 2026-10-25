@@ -45,8 +45,10 @@
 //! 不读任何文件内容（同 `ai_tools.rs` 的姿态）。
 
 use crate::scan::platform::Platform;
-use crate::scan::repos::{dir_sizes_batch, human_bytes, mtime_secs};
-use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner};
+use crate::scan::repos::{dir_sizes_batch, mtime_secs};
+use crate::scan::{
+    AssetGroup, Field, Item, MetricValue, Scanner, Text, TextArg, field_text, kind_text,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -233,10 +235,6 @@ impl Scanner for WslScanner {
     fn id(&self) -> &'static str {
         "wsl"
     }
-    fn label(&self) -> &'static str {
-        "WSL 发行版"
-    }
-
     fn scan(&self) -> AssetGroup {
         let paths: Vec<PathBuf> = self.distros.iter().map(|d| d.vhdx_path()).collect();
         let sizes = dir_sizes_batch(&paths);
@@ -269,14 +267,12 @@ impl Scanner for WslScanner {
 
         AssetGroup {
             id: self.id().into(),
-            label: self.label().into(),
+            label: self.label(),
             // 不写「可回收 0 B」：那读起来像「没什么可清的」。这里的关键信息是
             // 这些数字**够不着**，以及怎么才够得着。
-            summary: format!(
-                "{} 项 · 合计 {} · vhdx 只涨不缩，本组不计可回收",
-                items.len(),
-                human_bytes(total)
-            ),
+            summary: Text::fmt("data.summary.wsl")
+                .arg("count", TextArg::num(items.len()))
+                .arg("total", TextArg::bytes(total)),
             fields: wsl_fields(),
             items,
             notes: Some(wsl_notes()),
@@ -302,19 +298,17 @@ fn distro_item(d: &WslDistro, size: Option<u64>) -> Item {
         "last_modified".into(),
         match mtime_secs(&vhdx) {
             Some(ts) => MetricValue::Int(ts),
-            None => MetricValue::text("未知"),
+            None => MetricValue::key("data.value.unknown"),
         },
     );
-    metrics.insert(
-        "kind".into(),
-        MetricValue::text(if size.is_some() {
-            "虚拟磁盘"
-        } else if d.version == 1 {
-            "WSL1（无虚拟磁盘）"
-        } else {
-            "虚拟磁盘缺失"
-        }),
-    );
+    let kind = if size.is_some() {
+        "虚拟磁盘"
+    } else if d.version == 1 {
+        "WSL1（无虚拟磁盘）"
+    } else {
+        "虚拟磁盘缺失"
+    };
+    metrics.insert("kind".into(), MetricValue::text(kind));
 
     // detail 的键名带编号前缀：HashMap 顺序不定，前端按编号剥前缀后渲染
     let mut detail: HashMap<String, String> = HashMap::new();
@@ -334,6 +328,10 @@ fn distro_item(d: &WslDistro, size: Option<u64>) -> Item {
         id: format!("wsl:{}", d.name),
         tags: vec![], // 整组都不可回收，做成筛选标签等于没筛
         name: d.name.clone(),
+        label: None,
+        short_label: None,
+        group_label: None,
+        kind_label: Some(kind_text(kind)),
         group_key: None,
         // path 给发行版目录：它一定存在，且 ext4.vhdx 就在里面。
         // 虚拟磁盘的完整路径在 detail 里（U4 的两个动作只读、不执行）。
@@ -351,32 +349,32 @@ fn wsl_fields() -> Vec<Field> {
     vec![
         Field {
             key: "size".into(),
-            label: "体积".into(),
+            label: field_text("size"),
             numeric: Some(true),
             temporal: None,
         },
         Field {
             key: "last_modified".into(),
-            label: "最后修改".into(),
+            label: field_text("lastModified"),
             numeric: Some(true),
             temporal: Some(true),
         },
         Field {
             key: "kind".into(),
-            label: "类别".into(),
+            label: field_text("kind"),
             numeric: None,
             temporal: None,
         },
     ]
 }
 
-fn wsl_notes() -> Vec<String> {
+fn wsl_notes() -> Vec<Text> {
     vec![
-        "体积是 ext4.vhdx 文件的占用空间，不是发行版里实际用了多少".into(),
-        "动态扩展的 vhdx 只涨不缩：在发行版里删文件只在虚拟盘内部留空洞，Windows 侧文件尺寸纹丝不动——所以这里没法给出「删了能省多少」".into(),
-        "要把空间还给 Windows 得三步：发行版内 sudo fstrim -av → wsl --shutdown → 管理员执行 Optimize-VHD -Mode Full（或 diskpart 的 compact vdisk）。本工具一条都不做".into(),
-        "差多少属正常：实测有 60 GB 的 vhdx 里只有 12 GB 实际数据，另一例 Windows 显示 583 GB 而发行版内 df 只有 93 GB".into(),
-        "位置读自注册表 Lxss 键（wsl --list -v 不给路径），不执行任何 wsl 命令，也不进入发行版内部".into(),
+        Text::key("data.note.wsl.sizeMeaning"),
+        Text::key("data.note.wsl.growsOnly"),
+        Text::key("data.note.wsl.howToShrink"),
+        Text::key("data.note.wsl.gapIsNormal"),
+        Text::key("data.note.wsl.registryOnly"),
     ]
 }
 

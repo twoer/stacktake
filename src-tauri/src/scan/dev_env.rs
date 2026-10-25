@@ -16,8 +16,10 @@
 //! 鸿蒙 SDK 里可能有签名材料——内容一律不碰，体积与路径就够了。
 
 use crate::scan::platform::{Platform, first_existing};
-use crate::scan::repos::{dir_size_fast, dir_sizes_batch, human_bytes, lookup_size, mtime_secs};
-use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner};
+use crate::scan::repos::{dir_size_fast, dir_sizes_batch, lookup_size, mtime_secs};
+use crate::scan::{
+    AssetGroup, Field, Item, MetricValue, Scanner, Tag, Text, TextArg, field_text, kind_text,
+};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -161,7 +163,7 @@ fn maven_items(root: &Path) -> Vec<Item> {
                 "last_modified".into(),
                 match r.mtime {
                     Some(ts) => MetricValue::Int(ts),
-                    None => MetricValue::text("未知"),
+                    None => MetricValue::key("data.value.unknown"),
                 },
             );
             metrics.insert("kind".into(), MetricValue::text("依赖缓存"));
@@ -171,9 +173,13 @@ fn maven_items(root: &Path) -> Vec<Item> {
                 // 不带「可清理」标签：Maven 缓存删了要联网重拉，代价和 Gradle 旧分发版不是一回事
                 tags: vec![],
                 name: format!("Maven 仓库 · {}", r.name),
+                label: None,
+                short_label: Some(Text::raw(r.name.clone())),
+                group_label: Some(Text::key("data.section.mavenRepo")),
                 group_key: Some("Maven 仓库".into()),
                 path: r.path.display().to_string(),
                 metrics,
+                kind_label: Some(kind_text("依赖缓存")),
                 artifact_entries: vec![],
                 detail: Some(detail(&[
                     ("0. 路径", r.path.display().to_string()),
@@ -196,7 +202,7 @@ fn maven_items(root: &Path) -> Vec<Item> {
             "last_modified".into(),
             match rest_mtime {
                 Some(ts) => MetricValue::Int(ts),
-                None => MetricValue::text("未知"),
+                None => MetricValue::key("data.value.unknown"),
             },
         );
         metrics.insert("kind".into(), MetricValue::text("依赖缓存"));
@@ -205,9 +211,13 @@ fn maven_items(root: &Path) -> Vec<Item> {
             id: "java:mvn:__rest__".into(),
             tags: vec![],
             name: format!("Maven 仓库 · 其它 {} 项", rest),
+            label: None,
+            short_label: Some(Text::fmt("data.item.mavenRest").arg("count", TextArg::num(rest))),
+            group_label: Some(Text::key("data.section.mavenRepo")),
             group_key: Some("Maven 仓库".into()),
             path: root.display().to_string(),
             metrics,
+            kind_label: Some(kind_text("依赖缓存")),
             artifact_entries: vec![],
             detail: Some(detail(&[
                 ("0. 路径", root.display().to_string()),
@@ -286,7 +296,7 @@ fn gradle_items(home: &Path) -> Vec<Item> {
                     "last_modified".into(),
                     match mtime_secs(p) {
                         Some(ts) => MetricValue::Int(ts),
-                        None => MetricValue::text("未知"),
+                        None => MetricValue::key("data.value.unknown"),
                     },
                 );
                 metrics.insert("kind".into(), MetricValue::text("分发版"));
@@ -296,16 +306,27 @@ fn gradle_items(home: &Path) -> Vec<Item> {
                     tags: if keep {
                         vec![]
                     } else {
-                        vec!["可清理".into()]
+                        vec![Tag::new("cleanable")]
                     },
                     name: format!(
                         "Gradle · {} {}",
                         version,
                         if keep { "（最新）" } else { "（旧版）" }
                     ),
+                    label: None,
+                    short_label: Some(
+                        Text::key(if keep {
+                            "data.item.gradleLatest"
+                        } else {
+                            "data.item.gradleOlder"
+                        })
+                        .arg("version", Text::raw(version.clone())),
+                    ),
+                    group_label: Some(Text::raw("Gradle")),
                     group_key: Some("Gradle".into()),
                     path: p.display().to_string(),
                     metrics,
+                    kind_label: Some(kind_text("分发版")),
                     artifact_entries: vec![],
                     detail: Some(detail(&[
                         ("0. 路径", p.display().to_string()),
@@ -345,7 +366,7 @@ fn gradle_items(home: &Path) -> Vec<Item> {
             "last_modified".into(),
             match mtime_secs(&p) {
                 Some(ts) => MetricValue::Int(ts),
-                None => MetricValue::text("未知"),
+                None => MetricValue::key("data.value.unknown"),
             },
         );
         metrics.insert("kind".into(), MetricValue::text(kind));
@@ -353,14 +374,18 @@ fn gradle_items(home: &Path) -> Vec<Item> {
         items.push(Item {
             id: format!("java:gradle:{}", sub),
             tags: if cleanable {
-                vec!["可清理".into()]
+                vec![Tag::new("cleanable")]
             } else {
                 vec![]
             },
             name: format!("Gradle · {}", kind),
+            label: None,
+            short_label: Some(kind_text(kind)),
+            group_label: Some(Text::raw("Gradle")),
             group_key: Some("Gradle".into()),
             path: p.display().to_string(),
             metrics,
+            kind_label: Some(kind_text(kind)),
             artifact_entries: vec![],
             detail: Some(detail(&[
                 ("0. 路径", p.display().to_string()),
@@ -438,7 +463,7 @@ fn jdk_items() -> Vec<Item> {
                 "last_modified".into(),
                 match mtime_secs(p) {
                     Some(ts) => MetricValue::Int(ts),
-                    None => MetricValue::text("未知"),
+                    None => MetricValue::key("data.value.unknown"),
                 },
             );
             metrics.insert("kind".into(), MetricValue::text("运行时"));
@@ -449,9 +474,13 @@ fn jdk_items() -> Vec<Item> {
                 // 装几个版本是主动选择（不同项目要不同版本），不是残留。
                 tags: vec![],
                 name: format!("JDK · {}", version),
+                label: None,
+                short_label: Some(Text::raw(version.clone())),
+                group_label: Some(Text::raw("JDK")),
                 group_key: Some("JDK".into()),
                 path: p.display().to_string(),
                 metrics,
+                kind_label: Some(kind_text("已安装")),
                 artifact_entries: vec![],
                 detail: Some(detail(&[
                     ("0. 路径", p.display().to_string()),
@@ -483,10 +512,6 @@ impl Scanner for JavaScanner {
         "java"
     }
 
-    fn label(&self) -> &'static str {
-        "Java 环境"
-    }
-
     fn scan(&self) -> AssetGroup {
         let mut items: Vec<Item> = Vec::new();
 
@@ -506,29 +531,25 @@ impl Scanner for JavaScanner {
         let reclaimable: u64 = items.iter().filter_map(|i| i.reclaimable).sum();
         let cleanable_count = items.iter().filter(|i| i.cleanable).count();
 
-        let mut notes: Vec<String> = vec![
-            "只统计文件名与体积，不读取任何文件内容".into(),
-            "Maven 依赖缓存可从网络重建，但删掉要重新下载，不计入可回收".into(),
+        let mut notes: Vec<Text> = vec![
+            Text::key("data.note.devEnv.noContent"),
+            Text::key("data.note.java.mavenRebuildable"),
         ];
         if items.iter().any(|i| i.id.starts_with("java:jdk:")) {
-            notes.push(
-                "多个 JDK 并存在这里不算残留：17 与 21 都是主流长期支持版，不同项目要求不同，留谁是主动选择".into(),
-            );
+            notes.push(Text::key("data.note.java.multipleJdks"));
         }
         if cleanable_count > 0 {
-            notes.push("Gradle 旧分发版与守护日志标为可回收，清理入口启用前只显示不删除".into());
+            notes.push(Text::key("data.note.java.gradleOlder"));
         }
 
         AssetGroup {
             id: self.id().into(),
-            label: self.label().into(),
-            summary: format!(
-                "{} 项 · 合计 {} · {} 项可回收 · 共 {}",
-                items.len(),
-                human_bytes(total),
-                cleanable_count,
-                human_bytes(reclaimable)
-            ),
+            label: self.label(),
+            summary: Text::fmt("data.summary.devEnv")
+                .arg("count", TextArg::num(items.len()))
+                .arg("total", TextArg::bytes(total))
+                .arg("clean", TextArg::num(cleanable_count))
+                .arg("reclaim", TextArg::bytes(reclaimable)),
             fields: dev_fields(),
             items,
             notes: Some(notes),
@@ -592,7 +613,6 @@ struct Probe {
 
 pub struct DevEnvScanner {
     id: &'static str,
-    label: &'static str,
     /// 分组里说明「扫了哪些位置」，环境没装时用户能自己核对
     locations: Vec<String>,
     probes: Vec<Probe>,
@@ -611,7 +631,6 @@ impl DevEnvScanner {
         if p.is_windows() {
             return Self {
                 id: "ios",
-                label: "iOS 环境",
                 locations: vec![],
                 probes: vec![],
             };
@@ -619,7 +638,6 @@ impl DevEnvScanner {
         let dev = home.join("Library").join("Developer");
         Self {
             id: "ios",
-            label: "iOS 环境",
             locations: vec![
                 "/Applications/Xcode*.app".into(),
                 "~/Library/Developer/Xcode/DerivedData".into(),
@@ -714,7 +732,6 @@ impl DevEnvScanner {
             first_existing(home, ide_candidates).unwrap_or_else(|| home.join(ide_candidates[0]));
         Self {
             id: "android",
-            label: "Android 环境",
             locations: vec![
                 ide_show.into(),
                 format!("{sdk_show}/system-images"),
@@ -830,7 +847,6 @@ impl DevEnvScanner {
         };
         Self {
             id: "harmony",
-            label: "鸿蒙环境",
             locations: vec![
                 ide_show.into(),
                 sdk_show.into(),
@@ -901,10 +917,6 @@ impl Scanner for DevEnvScanner {
         self.id
     }
 
-    fn label(&self) -> &'static str {
-        self.label
-    }
-
     fn scan(&self) -> AssetGroup {
         // 先摊平成 (probe, path)，再并行 du——模拟器镜像这类大目录一次就好几秒
         let mut targets: Vec<(&Probe, PathBuf)> = Vec::new();
@@ -931,7 +943,7 @@ impl Scanner for DevEnvScanner {
                     "last_modified".into(),
                     match mtime_secs(&path) {
                         Some(ts) => MetricValue::Int(ts),
-                        None => MetricValue::text("未知"),
+                        None => MetricValue::key("data.value.unknown"),
                     },
                 );
                 metrics.insert("kind".into(), MetricValue::text(p.kind));
@@ -939,11 +951,15 @@ impl Scanner for DevEnvScanner {
                 Item {
                     id: format!("{}:{}", self.id, path.display()),
                     tags: if p.cleanable {
-                        vec!["可清理".into()]
+                        vec![Tag::new("cleanable")]
                     } else {
                         vec![]
                     },
                     name: p.name.into(),
+                    label: Some(probe_text(p.name)),
+                    short_label: None,
+                    group_label: None,
+                    kind_label: Some(kind_text(p.kind)),
                     // iOS / Android / 鸿蒙的条目名不带分节前缀（每行就是一条独立的
                     // 目录/组件），所以 group_key 留 None——分节是给「同一工具下多个
                     // 类别」那种结构用的。
@@ -980,24 +996,22 @@ impl Scanner for DevEnvScanner {
         let reclaimable: u64 = items.iter().filter_map(|i| i.reclaimable).sum();
         let cleanable_count = items.iter().filter(|i| i.cleanable).count();
 
-        let mut notes: Vec<String> = vec!["只统计文件名与体积，不读取任何文件内容".into()];
+        let mut notes: Vec<Text> = vec![Text::key("data.note.devEnv.noContent")];
         if items.is_empty() {
-            notes.push(format!(
-                "以上 {} 个位置都不存在，环境可能未安装",
-                self.locations.len()
-            ));
+            notes.push(
+                Text::fmt("data.note.devEnv.allMissing")
+                    .arg("count", TextArg::num(self.locations.len())),
+            );
         }
 
         AssetGroup {
             id: self.id.into(),
-            label: self.label.into(),
-            summary: format!(
-                "{} 项 · 合计 {} · {} 项可回收 · 共 {}",
-                items.len(),
-                human_bytes(total),
-                cleanable_count,
-                human_bytes(reclaimable)
-            ),
+            label: self.label(),
+            summary: Text::fmt("data.summary.devEnv")
+                .arg("count", TextArg::num(items.len()))
+                .arg("total", TextArg::bytes(total))
+                .arg("clean", TextArg::num(cleanable_count))
+                .arg("reclaim", TextArg::bytes(reclaimable)),
             fields: dev_fields(),
             items,
             notes: Some(notes),
@@ -1036,24 +1050,37 @@ pub(crate) fn dev_env_scanners_on(home: &Path, p: Platform) -> Vec<Box<dyn Scann
     v
 }
 
+/// 探测位置的展示名。绝大多数是产品名（DerivedData / CoreSimulator / ndk…），
+/// 保持原样；带中文的那几档走 `data.item.*`。
+fn probe_text(name: &'static str) -> Text {
+    let key = match name {
+        "Xcode 缓存" => "xcodeCache",
+        "Android Studio 缓存" => "androidStudioCache",
+        "DevEco Studio 配置" => "devecoConfig",
+        "命令行工具" => "commandLineTools",
+        _ => return Text::raw(name),
+    };
+    Text::key(format!("data.item.{key}"))
+}
+
 /// 前端只渲染 `fields.slice(0, 3)`，这里正好三个。
 fn dev_fields() -> Vec<Field> {
     vec![
         Field {
             key: "size".into(),
-            label: "体积".into(),
+            label: field_text("size"),
             numeric: Some(true),
             temporal: None,
         },
         Field {
             key: "last_modified".into(),
-            label: "最后修改".into(),
+            label: field_text("lastModified"),
             numeric: Some(true),
             temporal: Some(true),
         },
         Field {
             key: "kind".into(),
-            label: "类别".into(),
+            label: field_text("kind"),
             numeric: None,
             temporal: None,
         },

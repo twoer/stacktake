@@ -1,5 +1,5 @@
 [package]
-name = "stacktake"
+name = "Stacktake"
 version = "0.1.8"
 description = "本机资产清点台账"
 authors = ["twoer"]
@@ -24,6 +24,7 @@ ignore = "0.4"      # ripgrep 出品的并行目录遍历，自带 .gitignore �
 rayon = "1"         # 数据并行
 trash = "5"         # 跨平台移入废纸篓，绝不硬删
 dirs = "5"          # 用户目录（home / config）
+sys-locale = "0.3"  # 系统界面语言（localectl / Win32 / AppleLanguages 一层封装）
 
 # 更新下载（update.rs）。必须 Rust 侧：下载域名会 302 到
 # objects.githubusercontent.com，不在 webview CSP 的 connect-src 白名单里，

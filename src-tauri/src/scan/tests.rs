@@ -39,10 +39,29 @@ mod harness {
     use crate::scan::wsl::{
         WslDistro, WslScanner, parse_lxss_registry_for_test, wsl_scanners_with,
     };
-    use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner};
+    use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner, Tag, Text, TextArg};
     use crate::scan::{CleanPlan, CleanScope, OVERVIEW_ID, synthesize_overview};
     use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
+
+    /// `Text` 里的文案键（`Key` 直接是键，`Fmt` 在 `k`）；`Raw` 没有键。
+    /// 断言「后端下发的是键而不是某一种语言的成品」就用它——那是切语言
+    /// 不重扫的前提，成品文案一旦进缓存就会在别的语言里露出中文。
+    fn text_key(t: &Text) -> Option<&str> {
+        match t {
+            Text::Key(k) => Some(k.as_str()),
+            Text::Fmt(f) => Some(f.k.as_str()),
+            Text::Raw(_) => None,
+        }
+    }
+
+    /// 展示文案非空（三种形态各自的文案字段都得有内容）。
+    fn text_present(t: &Text) -> bool {
+        match t {
+            Text::Raw(s) | Text::Key(s) => !s.is_empty(),
+            Text::Fmt(f) => !f.k.is_empty(),
+        }
+    }
 
     #[test]
     fn ssh_scan_finds_keys_without_reading_secrets() {
@@ -152,10 +171,10 @@ mod harness {
             "父仓库未扣减子仓库，嵌套口径失效"
         );
 
-        let notes = g.notes.unwrap_or_default().join(" ");
+        let notes = g.notes.unwrap_or_default();
         assert!(
-            notes.contains("检测到 3 个嵌套仓库"),
-            "notes 应报告嵌套数: {notes}"
+            notes.contains(&Text::fmt("data.note.reposNested").arg("count", TextArg::num(3))),
+            "notes 应报告嵌套数: {notes:?}"
         );
     }
 
@@ -472,24 +491,30 @@ Host gamma
             g.items
                 .iter()
                 .find(|i| i.name == name)
-                .map(|i| i.tags.join(","))
+                .map(|i| {
+                    i.tags
+                        .iter()
+                        .map(|t| t.key.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
                 .unwrap_or_else(|| panic!("扫描结果里缺少条目 {name}"))
         };
         // 绝对路径命中 id_rsa_old
         assert!(
-            tags_of("id_rsa_old").contains("已引用"),
+            tags_of("id_rsa_old").contains("referenced"),
             "id_rsa_old 应被 prod 引用: {}",
             tags_of("id_rsa_old")
         );
         // 相对路径按 .ssh 拼齐命中 id_ed25519
         assert!(
-            tags_of("id_ed25519").contains("已引用"),
+            tags_of("id_ed25519").contains("referenced"),
             "id_ed25519 应被 home 引用: {}",
             tags_of("id_ed25519")
         );
         // 关键回归：id_rsa 只是 id_rsa_old 的前缀，旧实现会把它误标成已引用
         assert!(
-            tags_of("id_rsa").contains("未引用"),
+            tags_of("id_rsa").contains("unreferenced"),
             "id_rsa 未被引用却被误标: {}",
             tags_of("id_rsa")
         );
@@ -506,11 +531,22 @@ Host gamma
     // 缓存
     // ========================================================================
 
+    /// 每个测试目录一个独立路径。
+    ///
+    /// 只拼 `process::id()` 不够——`cargo test` 把所有测试跑在**同一进程的多个线程**里，
+    /// 同 tag 的两条测试会拿到同一个目录，而本函数开头就 `remove_dir_all`：一条正在
+    /// 扫描，另一条把它的数据删了，于是出现「单独跑绿、并发跑红」的假失败
+    /// （`displayed_text_is_a_key_not_finished_chinese` 与
+    /// `every_displayed_key_has_a_translation_in_all_five_catalogs` 共用
+    /// `display_smoke_groups`，就撞在这里）。加一个进程内原子序号，每次调用都唯一。
     fn temp_dir(tag: &str) -> PathBuf {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let d = std::env::temp_dir().join(format!(
-            "stacktake-cache-test-{}-{}",
+            "stacktake-cache-test-{}-{}-{}",
             tag,
-            std::process::id()
+            std::process::id(),
+            n
         ));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
@@ -754,14 +790,18 @@ Host gamma
             summary: "2 个仓库 · 合计 1.5 GB".into(),
             fields: vec![Field {
                 key: "size".into(),
-                label: "体积".into(),
+                label: Text::raw("体积"),
                 numeric: Some(true),
                 temporal: None,
             }],
             items: vec![Item {
                 id: "/tmp/a".into(),
-                tags: vec!["大".into(), "陈旧".into()],
+                tags: vec![Tag::new("large"), Tag::new("stale")],
                 name: "a".into(),
+                label: None,
+                short_label: None,
+                group_label: None,
+                kind_label: None,
                 group_key: None,
                 path: "/tmp/a".into(),
                 metrics: HashMap::from([
@@ -777,7 +817,7 @@ Host gamma
                 artifact_entries: vec![],
                 reclaimable: Some(1_000_000_000),
             }],
-            notes: Some(vec!["提示：测试".into()]),
+            notes: Some(vec![Text::raw("提示：测试")]),
             error: None,
             supports_clean: true,
         }
@@ -817,14 +857,17 @@ Host gamma
             "branch 应还原为 Text，实际 {:?}",
             item.metrics.get("branch")
         );
-        assert_eq!(item.tags, vec!["大", "陈旧"]);
+        assert_eq!(item.tags, vec![Tag::new("large"), Tag::new("stale")]);
         assert_eq!(
             item.detail.as_ref().unwrap().get("远端").unwrap(),
             "git@github.com:x/y.git"
         );
         assert!(item.cleanable);
         assert_eq!(item.reclaimable, Some(1_000_000_000));
-        assert_eq!(got.groups[0].notes.as_ref().unwrap()[0], "提示：测试");
+        assert_eq!(
+            got.groups[0].notes.as_ref().unwrap()[0],
+            Text::raw("提示：测试")
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -994,12 +1037,10 @@ Host gamma
         std::fs::write(dir.join("repo-roots.json"), b"broken").unwrap();
         let loaded = cache::load(&dir).unwrap();
         assert!(loaded.groups[0].items.is_empty());
-        assert!(
-            loaded.groups[0]
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("无法读取")
+        assert_eq!(
+            loaded.groups[0].error.as_ref().and_then(text_key),
+            Some("data.error.repoRootsRead"),
+            "补充目录读取失败应下发文案键，让界面按当前语言显示"
         );
         assert!(!loaded.groups[0].supports_clean);
         assert_eq!(
@@ -1395,7 +1436,7 @@ Host gamma
                 assert_eq!(it.group_key.as_deref(), Some(expected[&root]));
                 assert!(!it.cleanable, "{} 只能统计", it.id);
                 assert!(it.reclaimable.is_none(), "{} 不应报可回收量", it.id);
-                assert!(!it.tags.iter().any(|t| t == "可清理"));
+                assert!(!it.tags.iter().any(|t| t.key == "cleanable"));
                 let (cat, parsed_root) = parse_ai_id(&it.id).unwrap();
                 assert_eq!(parsed_root, root);
                 let child = match cat {
@@ -1923,7 +1964,7 @@ Host gamma
     #[test]
     fn repo_scan_with_no_roots_reports_instead_of_panicking() {
         let g = RepoScanner::new(vec![]).scan();
-        assert_eq!(g.summary, "未配置根目录");
+        assert_eq!(g.summary, Text::key("data.summary.reposNoRoots"));
         assert!(g.items.is_empty());
         assert_eq!(g.error, None, "这是配置状态不是扫描失败");
     }
@@ -1973,7 +2014,10 @@ Host gamma
             .iter()
             .find(|s| s.id() == "repos")
             .expect("repos 未注册");
-        assert_eq!(repos_empty.scan().summary, "未配置根目录");
+        assert_eq!(
+            repos_empty.scan().summary,
+            Text::key("data.summary.reposNoRoots"),
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -3098,7 +3142,9 @@ CACHE ID   CACHE TYPE   SIZE      CREATED   LAST USED   USAGE     SHARED
             "id 前缀不对"
         );
         assert!(
-            g.items.iter().all(|i| i.tags == vec!["可清理".to_string()]),
+            g.items
+                .iter()
+                .all(|i| i.tags == vec![Tag::new("cleanable")]),
             "标签只剩可清理"
         );
 
@@ -3152,7 +3198,9 @@ CACHE ID   CACHE TYPE   SIZE      CREATED   LAST USED   USAGE     SHARED
         assert!(
             g.notes
                 .as_ref()
-                .map(|n| n.iter().any(|s| s.contains("一个都不存在")))
+                .map(|n| n
+                    .iter()
+                    .any(|s| text_key(s) == Some("data.note.toolchain.empty")))
                 .unwrap_or(false),
             "该提示白名单目录均不存在"
         );
@@ -3402,7 +3450,9 @@ CACHE ID   CACHE TYPE   SIZE      CREATED   LAST USED   USAGE     SHARED
         assert!(
             g.notes
                 .as_ref()
-                .map(|n| n.iter().any(|s| s.contains("版本管理器")))
+                .map(|n| n
+                    .iter()
+                    .any(|s| text_key(s) == Some("data.note.toolchain.versionManagers")))
                 .unwrap_or(false),
             "notes 该说明版本管理器的口径：{:?}",
             g.notes
@@ -3807,8 +3857,8 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
     fn assert_frontend_contract(groups: &[AssetGroup]) {
         for g in groups {
             assert!(!g.id.is_empty(), "分组 id 为空");
-            assert!(!g.label.is_empty(), "分组 {} 的 label 为空", g.id);
-            assert!(!g.summary.is_empty(), "分组 {} 的 summary 为空", g.id);
+            assert!(text_present(&g.label), "分组 {} 的 label 为空", g.id);
+            assert!(text_present(&g.summary), "分组 {} 的 summary 为空", g.id);
 
             // 前端 `Assets.vue` 是 `fields.slice(0, 3)`：第四个字段不会进表头
             assert!(
@@ -3819,7 +3869,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             );
             for f in &g.fields {
                 assert!(
-                    !f.key.is_empty() && !f.label.is_empty(),
+                    !f.key.is_empty() && text_present(&f.label),
                     "分组 {} 有空字段",
                     g.id
                 );
@@ -3990,11 +4040,13 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         assert_frontend_contract(&[serde_json::from_value(valid).unwrap()]);
     }
 
-    /// 冒烟：每个 Scanner 对着空 home 都能给出形状合法的分组，不 panic。
-    /// 纯临时目录，毫秒级；新 Scanner 若没加进下面的构造列表，这条会漏掉它——
-    /// 所以新增 Scanner 时记得同步（`scanner_registration_is_pinned` 也会提醒）。
-    #[test]
-    fn every_scanner_survives_empty_home() {
+    /// 冒烟用的分组集合：**每个 Scanner 对着空 home 跑一遍**。
+    ///
+    /// 纯临时目录，毫秒级。抽成函数是因为有两条测试共用它——`every_scanner_survives_empty_home`
+    /// 管「形状合法、不 panic」，`displayed_text_is_a_key_not_finished_chinese` 管
+    /// 「展示文案下发的是键」。新 Scanner 若没加进下面的构造列表，两条一起漏掉它
+    /// （`scanner_registration_is_pinned` 也会提醒）。
+    fn empty_home_smoke_groups() -> (PathBuf, Vec<AssetGroup>) {
         let root = temp_dir("smoke");
         let empty_home = root.join("home");
         std::fs::create_dir_all(&empty_home).unwrap();
@@ -4022,6 +4074,262 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         for s in wsl_scanners_with(Platform::Windows, || Ok(LXSS_SAMPLE.into())) {
             groups.push(s.scan());
         }
+        (root, groups)
+    }
+
+    /// 冒烟集 + 一份造出来的假 home，把展示文案的**行级**形态也逼出来。
+    ///
+    /// toolchain 是探测型，空 home 下不进冒烟集合——于是它的三种行形（整目录缓存、
+    /// 可列子目录、已装版本）在别的机器上就没被查过。造一份假 home 一次把三类都
+    /// 逼出来，两边平台各扫一遍（硬约束 9：覆盖面不取决于本机装了什么）。
+    /// 返回（要清理的目录、分组、假 home 扫出的行数）。
+    fn display_smoke_groups() -> (Vec<PathBuf>, Vec<AssetGroup>, usize) {
+        let (root, mut groups) = empty_home_smoke_groups();
+        let seeded = temp_dir("toolchain_display");
+        for rel in [
+            ".rustup/downloads",
+            ".rustup/toolchains/stable-arm64-apple-darwin",
+            ".cargo/registry",
+            ".nvm/.cache",
+            ".nvm/versions/node/v20.19.5",
+            "Library/Developer/Xcode/DerivedData/projA-abcdef",
+            "Library/Developer/Xcode/iOS Device Support/Devices/iPhone-17.0",
+        ] {
+            std::fs::create_dir_all(seeded.join(rel)).unwrap();
+        }
+        let mut seeded_rows = 0usize;
+        for p in [Platform::Mac, Platform::Windows] {
+            let g = ToolchainScanner::on(seeded.clone(), p).scan();
+            seeded_rows += g.items.len();
+            groups.push(g);
+        }
+        (vec![root, seeded], groups, seeded_rows)
+    }
+
+    /// 遍历一个分组里**所有给人看的文案位**（分组名 / 摘要 / 错误 / 字段名 / 脚注 /
+    /// 行标签 / 行的四个展示字段）。两条国际化门禁共用这张表——漏一个展示位，
+    /// 那条门禁就等于没立。
+    fn each_display_text(groups: &[AssetGroup], f: &mut impl FnMut(&str, &Text)) {
+        for g in groups {
+            f(&format!("{} 分组名", g.id), &g.label);
+            f(&format!("{} 概览", g.id), &g.summary);
+            if let Some(e) = &g.error {
+                f(&format!("{} 错误", g.id), e);
+            }
+            for fld in &g.fields {
+                f(&format!("{} 字段 {}", g.id, fld.key), &fld.label);
+            }
+            for n in g.notes.iter().flatten() {
+                f(&format!("{} 脚注", g.id), n);
+            }
+            for it in &g.items {
+                for tg in &it.tags {
+                    f(&format!("{} 行标签", g.id), &tg.label);
+                }
+                for (slot, t) in [
+                    ("label", &it.label),
+                    ("short_label", &it.short_label),
+                    ("group_label", &it.group_label),
+                    ("kind_label", &it.kind_label),
+                ] {
+                    if let Some(t) = t {
+                        f(&format!("{} 行的 {slot}", g.id), t);
+                    }
+                }
+            }
+        }
+    }
+
+    /// 展示文案里不许出现「成品中文」——只允许文案键。
+    ///
+    /// 为什么单独立一条：界面切到英文后侧栏仍是中文，就是因为后端把成品串写进了
+    /// `label` / `summary` / `notes` / 字段名 / 标签 / 分节名。这些位置一旦进了
+    /// `scan-cache.json`，切语言只能重扫才能变——而「切语言不重扫」是整个国际化
+    /// 方案的前提。所以判据不是「有没有中文」（仓库名、模型名里本来就有），
+    /// 是「**展示位下发的是键还是成品**」。
+    ///
+    /// 覆盖的展示位：分组 `label` / `summary` / `notes` / `error`、字段名、行标签，
+    /// 以及行的 `label` / `short_label` / `group_label` / `kind_label`。
+    /// **不覆盖**（刻意留在 P2b）：`Item.detail` 的正文、`Item.name`、`metrics.kind`
+    /// 的原始值——后两者是搜索 / 筛选 / 分节的词表，语言无关才正确。
+    #[test]
+    fn displayed_text_is_a_key_not_finished_chinese() {
+        let (roots, groups, seeded_rows) = display_smoke_groups();
+        let mut offenders: Vec<String> = vec![];
+
+        each_display_text(&groups, &mut |where_, t| {
+            check_text(&mut offenders, where_, t);
+        });
+        for root in &roots {
+            let _ = std::fs::remove_dir_all(root);
+        }
+        // 假 home 一个行都没扫出来时，这条只查了分组级的文案——行级的三种行形
+        // （缓存 / 子目录 / 版本）等于没验，而测试照样显示 ok。所以先钉覆盖面。
+        assert!(
+            seeded_rows >= 6,
+            "假 home 该逼出缓存行、子目录行与版本行，实际只有 {seeded_rows} 行：白名单条目改名了？"
+        );
+        // 三类行形里最容易被漏掉的是版本行（`version_item` 与缓存行走的是不同的
+        // 文案组装路径），所以单独钉一条：至少扫出一行「已安装」。
+        let installed = groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .filter(|i| matches!(&i.kind_label, Some(Text::Key(k)) if k == "data.kind.installed"))
+            .count();
+        assert!(
+            installed >= 1,
+            "假 home 该扫出「已安装」版本行（nvm/versions/node 下那一行），实际 {installed} 行"
+        );
+        assert!(
+            offenders.is_empty(),
+            "展示位下发的是成品中文而不是文案键（切语言不会跟着变）：\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// 后端下发的**每一个文案键**都得在五份语言目录里有译文。
+    ///
+    /// 上一条管「下发的是不是键」，这条管「键查不查得到」——两者缺一都漏：
+    /// 前端 `translate()` 查不到键时**回显键名**（不抛错、不显示 undefined），
+    /// 于是漏一条就是界面上出现 `data.group.repos` 这种字符串，而 Rust 侧全绿。
+    /// 判据取五份目录的交集：只补 en 会让另外四种语言静默显示英文。
+    ///
+    /// 只查**本次扫出来的键**（方向是「代码在用 → 目录必须有」）。反向的
+    /// 「目录里有 → 代码还在用」不查：目录里留着未注册分组（ssh / docker）的
+    /// 文案是有意为之，加回来时不必再补。
+    #[test]
+    fn every_displayed_key_has_a_translation_in_all_five_catalogs() {
+        const CATALOGS: [(&str, &str); 5] = [
+            ("en", include_str!("../../../src/locales/en.json")),
+            ("es", include_str!("../../../src/locales/es.json")),
+            ("ja", include_str!("../../../src/locales/ja.json")),
+            ("zh-CN", include_str!("../../../src/locales/zh-CN.json")),
+            ("zh-TW", include_str!("../../../src/locales/zh-TW.json")),
+        ];
+        let parsed: Vec<(&str, serde_json::Value)> = CATALOGS
+            .iter()
+            .map(|(loc, raw)| {
+                (
+                    *loc,
+                    serde_json::from_str(raw).expect("语言目录必须是合法 JSON"),
+                )
+            })
+            .collect();
+
+        let (roots, groups, _) = display_smoke_groups();
+        let mut keys: Vec<String> = vec![];
+        each_display_text(&groups, &mut |_, t| collect_text_keys(t, &mut keys));
+        // 指标里的 `t:"k"`（`data.value.unknown` 这类）也是展示位：前端
+        // `formatMetric` 同样查表，漏一条就是单元格里印着键名。
+        for g in &groups {
+            for it in &g.items {
+                for m in it.metrics.values() {
+                    if let MetricValue::TextKey(k) = m {
+                        keys.push(k.clone());
+                    }
+                }
+            }
+        }
+        for root in &roots {
+            let _ = std::fs::remove_dir_all(root);
+        }
+        keys.sort();
+        keys.dedup();
+        assert!(
+            keys.len() > 40,
+            "本次只收集到 {} 个文案键，覆盖面太小，这条基本等于没跑：展示位的遍历漏了？",
+            keys.len()
+        );
+
+        let missing: Vec<String> = keys
+            .iter()
+            .flat_map(|k| {
+                parsed.iter().filter_map(move |(loc, catalog)| {
+                    catalog
+                        .get(k)
+                        .and_then(|v| v.as_str())
+                        .is_none()
+                        .then_some(format!("{loc} 缺 {k}"))
+                })
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "后端下发的文案键在语言目录里没有译文，界面会直接印键名：\n{}",
+            missing.join("\n")
+        );
+    }
+
+    /// 收集一条 `Text` 里所有需要译文的键（含 `Fmt` 的参数，参数本身也可以是键）。
+    fn collect_text_keys(t: &Text, out: &mut Vec<String>) {
+        match t {
+            Text::Raw(_) => {}
+            Text::Key(k) => out.push(k.clone()),
+            Text::Fmt(f) => {
+                out.push(f.k.clone());
+                for arg in f.a.values() {
+                    match arg {
+                        TextArg::Key(k) => out.push(k.clone()),
+                        TextArg::Fmt(inner) => out.push(inner.k.clone()),
+                        TextArg::Raw(_) | TextArg::Num(_) | TextArg::Bytes(_) => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// 展示位的文案里出现 CJK 就算违规。
+    ///
+    /// `Raw` 还合法的两种情况：**语言无关的身份串**（`JDK`、`nvm`、版本号、模型名）
+    /// 与**从文件系统读来的名字**（含 CJK 的目录名本来就是数据，不是文案）。前者不含
+    /// CJK；后者只在真扫到数据时才出现，空 home 冒烟集里没有——所以判据可以是
+    /// 「不含 CJK 即放行」，不需要维护一张品牌名单。
+    fn contains_cjk(s: &str) -> bool {
+        s.chars().any(|c| c as u32 >= 0x2E80)
+    }
+
+    fn check_text(offenders: &mut Vec<String>, where_: &str, t: &Text) {
+        match t {
+            Text::Raw(s) => {
+                if contains_cjk(s) {
+                    offenders.push(format!("{where_} = {s:?}"));
+                }
+            }
+            Text::Key(k) => {
+                if contains_cjk(k) {
+                    offenders.push(format!("{where_} 键名带中文：{k:?}"));
+                }
+            }
+            // `Fmt` 的参数本该只有数字、字节与语言无关的标识符。递归一遍：
+            // 成品文案混在参数里同样是「切语言不变」。
+            Text::Fmt(f) => {
+                if contains_cjk(&f.k) {
+                    offenders.push(format!("{where_} 键名带中文：{:?}", f.k));
+                }
+                for (name, arg) in &f.a {
+                    match arg {
+                        TextArg::Raw(s) | TextArg::Key(s) => {
+                            if contains_cjk(s) {
+                                offenders.push(format!("{where_} 参数 {name} = {s:?}"));
+                            }
+                        }
+                        TextArg::Fmt(inner) => {
+                            let nested = Text::Fmt(inner.clone());
+                            check_text(offenders, &format!("{where_} 参数 {name}"), &nested);
+                        }
+                        TextArg::Num(_) | TextArg::Bytes(_) => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// 冒烟：每个 Scanner 对着空 home 都能给出形状合法的分组，不 panic。
+    /// 纯临时目录，毫秒级；新 Scanner 若没加进下面的构造列表，这条会漏掉它——
+    /// 所以新增 Scanner 时记得同步（`scanner_registration_is_pinned` 也会提醒）。
+    #[test]
+    fn every_scanner_survives_empty_home() {
+        let (root, groups) = empty_home_smoke_groups();
 
         assert!(!groups.is_empty(), "空 home 下也应有无条件注册的分组");
         assert_frontend_contract(&groups);
@@ -4041,19 +4349,19 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         rich.fields = vec![
             Field {
                 key: "size".into(),
-                label: "体积".into(),
+                label: Text::raw("体积"),
                 numeric: Some(true),
                 temporal: None,
             },
             Field {
                 key: "last_commit".into(),
-                label: "最后提交".into(),
+                label: Text::raw("最后提交"),
                 numeric: Some(true),
                 temporal: Some(true),
             },
             Field {
                 key: "branch".into(),
-                label: "分支".into(),
+                label: Text::raw("分支"),
                 numeric: None,
                 temporal: None,
             },
@@ -4061,8 +4369,12 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         rich.items[0].name = "大仓库".into(); // 不带分隔符也合法：整组单节渲染
         rich.items.push(Item {
             id: "/tmp/b".into(),
-            tags: vec!["可清理".into()],
+            tags: vec![Tag::new("cleanable")],
             name: "工具链 · npm 缓存".into(),
+            label: None,
+            short_label: None,
+            group_label: None,
+            kind_label: None,
             group_key: Some("工具链".into()),
             path: "/tmp/b".into(),
             metrics: HashMap::from([
@@ -4082,12 +4394,12 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         // 出错分组：有 error 就没有明细行
         let failed = AssetGroup {
             id: "broken".into(),
-            label: "坏分组".into(),
-            summary: "扫描失败".into(),
+            label: Text::raw("坏分组"),
+            summary: Text::raw("扫描失败"),
             fields: vec![],
             items: vec![],
             notes: None,
-            error: Some("docker 未运行".into()),
+            error: Some(Text::raw("docker 未运行")),
             supports_clean: false,
         };
 
@@ -4105,11 +4417,11 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
     fn overview_fixture(id: &str, label: &str, size: u64, reclaim: u64) -> AssetGroup {
         AssetGroup {
             id: id.into(),
-            label: label.into(),
-            summary: format!("{label} 测试夹具"),
+            label: Text::raw(label),
+            summary: Text::raw(format!("{label} 测试夹具")),
             fields: vec![Field {
                 key: "size".into(),
-                label: "体积".into(),
+                label: Text::raw("体积"),
                 numeric: Some(true),
                 temporal: None,
             }],
@@ -4118,6 +4430,10 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                     id: format!("{id}:a"),
                     tags: vec![],
                     name: "a".into(),
+                    label: None,
+                    short_label: None,
+                    group_label: None,
+                    kind_label: None,
                     group_key: None,
                     path: "/tmp/a".into(),
                     metrics: HashMap::from([("size".into(), MetricValue::Bytes(size))]),
@@ -4131,6 +4447,10 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                     id: format!("{id}:b"),
                     tags: vec![],
                     name: "b".into(),
+                    label: None,
+                    short_label: None,
+                    group_label: None,
+                    kind_label: None,
                     group_key: None,
                     path: "/tmp/b".into(),
                     metrics: HashMap::from([("size".into(), MetricValue::Bytes(0))]),
@@ -4159,7 +4479,14 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         assert_eq!(ov.fields.len(), 3, "体积 / 可回收 / 条目，正好三个");
 
         let repos = &ov.items[0];
-        assert_eq!(repos.name, "Git 仓库", "行名就是分组 label");
+        // 行名是**稳定身份**（分组 id，不参与展示），展示名走 `label`——
+        // 与 `Item` 的通用契约同一条：搜索 / 排序读 name，渲染读 label。
+        assert_eq!(repos.name, "repos", "总览行的身份就是分组 id");
+        assert_eq!(
+            repos.label,
+            Some(Text::raw("Git 仓库")),
+            "分组名进展示字段，不进 name"
+        );
         match repos.metrics.get("size") {
             Some(MetricValue::Bytes(b)) => assert_eq!(*b, 3_000),
             other => panic!("size 该是字节数，实为 {other:?}"),
@@ -4176,9 +4503,24 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         assert_eq!(repos.path, "overview://repos");
         assert!(!repos.cleanable && repos.reclaimable.is_none());
 
-        assert!(ov.summary.contains("2 个分组"), "summary: {}", ov.summary);
-        assert!(ov.summary.contains("4.9 KB"), "summary: {}", ov.summary);
-        assert!(ov.summary.contains("1000 B"), "summary: {}", ov.summary);
+        // 总览说的是「几个分组、共多少、可回收多少」：数字与字节都以带类型的
+        // 参数下发，成品文案由前端按当前语言拼（es 的千分位是点、字节小数是逗号）
+        assert_eq!(text_key(&ov.summary), Some("data.summary.overview"));
+        if let Text::Fmt(f) = &ov.summary {
+            assert_eq!(f.a.get("count"), Some(&TextArg::Num(2)), "分组数：{f:?}");
+            assert_eq!(
+                f.a.get("total"),
+                Some(&TextArg::Bytes(5_000)),
+                "合计：{f:?}"
+            );
+            assert_eq!(
+                f.a.get("reclaim"),
+                Some(&TextArg::Bytes(1_000)),
+                "可回收：{f:?}"
+            );
+        } else {
+            panic!("总览 summary 该是带参数的文案键，实为 {:?}", ov.summary);
+        }
 
         assert_frontend_contract(std::slice::from_ref(&ov));
     }
@@ -4313,7 +4655,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
 
         let g = LocalModelsScanner::new(root.clone()).scan();
         assert_eq!(g.id, "local_models");
-        assert_eq!(g.label, "本地模型");
+        assert_eq!(g.label, Text::key("data.group.local_models"));
         assert_eq!(g.items.len(), 1, "一个 manifest 一行");
 
         let it = &g.items[0];
@@ -4550,7 +4892,10 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         // 不注册 ≠ 扫了会坏：显式扫也要给出形状合法的空分组
         let g = LocalModelsScanner::new(home).scan();
         assert!(g.items.is_empty());
-        assert!(g.summary.contains("0 个模型"), "summary: {}", g.summary);
+        assert_eq!(text_key(&g.summary), Some("data.summary.localModels"));
+        if let Text::Fmt(f) = &g.summary {
+            assert_eq!(f.a.get("count"), Some(&TextArg::Num(0)), "{f:?}");
+        }
         assert_frontend_contract(std::slice::from_ref(&g));
 
         std::fs::remove_dir_all(&root).ok();
@@ -4866,7 +5211,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
 
         let up = find("unpushed");
         assert!(
-            up.tags.iter().any(|t| t == "未推送"),
+            up.tags.iter().any(|t| t.key == "unpushed"),
             "领先远端该标「未推送」：tags={:?}",
             up.tags
         );
@@ -4877,7 +5222,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
 
         let be = find("behind");
         assert!(
-            !be.tags.iter().any(|t| t == "未推送"),
+            !be.tags.iter().any(|t| t.key == "unpushed"),
             "只是落后不该标「未推送」：tags={:?}",
             be.tags
         );
@@ -4900,7 +5245,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let g = RepoScanner::new(vec![root.clone()]).scan();
         let item = g.items.iter().find(|i| i.name == "repo").expect("应扫到");
         assert!(
-            item.tags.iter().any(|t| t == "未推送"),
+            item.tags.iter().any(|t| t.key == "unpushed"),
             "退路计数应识别出未推送：tags={:?}",
             item.tags
         );
@@ -4941,7 +5286,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let g = RepoScanner::new(vec![repo.parent().unwrap().to_path_buf()]).scan();
         let item = g.items.iter().find(|i| i.name == "repo").expect("应扫到");
         assert!(
-            !item.tags.iter().any(|t| t == "未推送"),
+            !item.tags.iter().any(|t| t.key == "unpushed"),
             "推过（HEAD 在远端引用里）不该标未推送：tags={:?}",
             item.tags
         );
@@ -4971,7 +5316,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let g = RepoScanner::new(vec![repo.parent().unwrap().to_path_buf()]).scan();
         let item = g.items.iter().find(|i| i.name == "repo").expect("应扫到");
         assert!(
-            item.tags.iter().any(|t| t == "有 stash"),
+            item.tags.iter().any(|t| t.key == "stashed"),
             "有 stash 该打标签：tags={:?}",
             item.tags
         );
@@ -5007,12 +5352,12 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let g = RepoScanner::new(vec![root.clone()]).scan();
         let item = g.items.iter().find(|i| i.name == "repo").expect("应扫到");
         assert!(
-            !item.tags.iter().any(|t| t == "未推送"),
+            !item.tags.iter().any(|t| t.key == "unpushed"),
             "没提交就没可推的：tags={:?}",
             item.tags
         );
         assert!(
-            !item.tags.iter().any(|t| t == "有 stash"),
+            !item.tags.iter().any(|t| t.key == "stashed"),
             "空 init 没有 stash"
         );
         assert!(
@@ -5035,11 +5380,14 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let g = RepoScanner::new(vec![repo.parent().unwrap().to_path_buf()]).scan();
         let item = g.items.iter().find(|i| i.name == "repo").expect("应扫到");
         match item.metrics.get("branch") {
-            Some(MetricValue::Text(s)) => assert_eq!(s, "游离", "游离 HEAD 不该显示成 HEAD"),
+            Some(MetricValue::TextKey(k)) => assert_eq!(
+                k, "data.value.detachedBranch",
+                "游离 HEAD 该下发文案键，不是某一种语言的成品",
+            ),
             other => panic!("branch 该是文本，实为 {other:?}"),
         }
         assert!(
-            item.tags.iter().any(|t| t == "未推送"),
+            item.tags.iter().any(|t| t.key == "unpushed"),
             "游离提交没推送过，退路计数应识别"
         );
         assert!(!item.cleanable);
@@ -5066,12 +5414,12 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             item.tags
         );
         assert!(
-            item.tags.iter().any(|t| t == "未推送"),
+            item.tags.iter().any(|t| t.key == "unpushed"),
             "推送状态按未知处理：tags={:?}",
             item.tags
         );
         assert!(
-            !item.tags.iter().any(|t| t == "有 stash"),
+            !item.tags.iter().any(|t| t.key == "stashed"),
             "stash 没核实成不许挂「有 stash」标签：tags={:?}",
             item.tags
         );
@@ -5336,7 +5684,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             assert!(d["构建产物"].contains("node_modules×14"));
             assert!(d["构建产物"].contains("target"));
             assert!(!d.contains_key("产物明细"), "旧多行文本契约应移除");
-            assert!(item.tags.iter().any(|tag| tag == "有产物"));
+            assert!(item.tags.iter().any(|tag| tag.key == "artifacts"));
             match item.metrics.get("artifacts") {
                 Some(MetricValue::Bytes(b)) => {
                     assert_eq!(*b, expected.iter().map(|(_, n)| n).sum::<u64>())
@@ -5421,7 +5769,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             Some(MetricValue::Bytes(b)) => assert_eq!(*b, tree_bytes(&nm), "产物体积 = 独立累加"),
             other => panic!("该有 artifacts 指标，实为 {other:?}"),
         }
-        assert!(item.tags.iter().any(|t| t == "有产物"));
+        assert!(item.tags.iter().any(|t| t.key == "artifacts"));
         let detail = item.detail.as_ref().unwrap();
         let line = detail.get("构建产物").expect("detail 该有构建产物行");
         assert!(line.contains("node_modules"), "line: {line}");
@@ -5651,7 +5999,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             "有未提交改动：不该标可回收（S2 收紧的核心）"
         );
         assert!(
-            it2.tags.iter().any(|t| t == "有改动"),
+            it2.tags.iter().any(|t| t.key == "modified"),
             "改动标签照旧显示：tags={:?}",
             it2.tags
         );

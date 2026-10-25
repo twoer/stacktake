@@ -13,10 +13,10 @@ import {
 } from "@lucide/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "vue-sonner";
-import type { CleanResult, Item } from "@/lib/types";
+import type { CleanResult, Item, Tag } from "@/lib/types";
 import {
   formatAgo,
-  formatBytes,
+  groupLabelOf,
   groupReclaimable,
   groupSize,
   itemSize,
@@ -41,6 +41,7 @@ import {
   countMatches,
   dimensionsFor,
   machineStatsOf,
+  rowFullName,
   rowName,
   rowTagsOf,
   sectionReclaim,
@@ -50,6 +51,7 @@ import {
   suppressedTagsOf,
   visibleRowsOf,
 } from "@/lib/rows";
+import { renderText, t } from "@/lib/i18n";
 import { isLocalPath } from "@/lib/path";
 import { STALE_AFTER_SECS } from "@/lib/autoScan";
 import { Button } from "@/components/ui/button";
@@ -223,9 +225,9 @@ async function onCopyPath(item: Item) {
   closeMenu();
   try {
     await navigator.clipboard.writeText(item.path);
-    toast.success("路径已复制");
+    toast.success(t("assets.pathCopied"));
   } catch {
-    toast.error("复制失败，可检查器中手动选中路径");
+    toast.error(t("assets.copyFailed"));
   }
 }
 
@@ -287,15 +289,20 @@ function askBatchClean() {
 async function applyCleanResult(r: CleanResult, labels?: ReadonlyMap<string, string>) {
   if (r.succeeded.length > 0) {
     toast.success(
-      r.succeeded.length > 1
-        ? `已将 ${r.succeeded.length} 项移入废纸篓，腾出 ${formatBytes(r.freed_bytes)}`
-        : `已移入废纸篓，腾出 ${formatBytes(r.freed_bytes)}`,
+      t("assets.freed", {
+        count: r.succeeded.length,
+        bytes: { t: "b", v: r.freed_bytes },
+      }),
     );
   }
   // id = "*" 是整个计划被拒（如未确认），其余是单项失败（复核不通过/废纸篓出错）。
   // 批量时逐项报失败；有 labels 就把 id 翻成行名（toolchain id 带前缀，路径也长）。
   for (const f of r.failed) {
-    toast.error(f.id === "*" ? f.reason : `${labels?.get(f.id) ?? f.id}：${f.reason}`);
+    toast.error(
+      f.id === "*"
+        ? f.reason
+        : t("assets.failureItem", { name: labels?.get(f.id) ?? f.id, reason: f.reason }),
+    );
   }
   if (r.succeeded.length === 0) return;
   const before = sizeSnapshot();
@@ -316,14 +323,14 @@ const batchDialog = ref<InstanceType<typeof BatchCleanDialog> | null>(null);
 const artifactDialog = ref<InstanceType<typeof ArtifactCleanDialog> | null>(null);
 
 async function confirmClean() {
-  const t = cleanTarget.value;
-  if (!t) return;
+  const target = cleanTarget.value;
+  if (!target) return;
   cleanTarget.value = null;
   try {
     const r = await invoke<CleanResult>("clean_items", {
-      plan: { group_id: t.groupId, item_ids: [t.item.id], confirmed: true, scope: "repo" },
+      plan: { group_id: target.groupId, item_ids: [target.item.id], confirmed: true, scope: "repo" },
     });
-    await applyCleanResult(r, new Map([[t.item.id, t.item.name]]));
+    await applyCleanResult(r, new Map([[target.item.id, target.item.name]]));
   } catch (e) {
     toast.error(String(e));
   }
@@ -358,15 +365,15 @@ async function confirmCleanArtifacts(targets: string[], item: Item) {
  * invoke 本身失败（IPC/后端错误）则保留选择，用户可以直接重试。
  */
 async function confirmBatchClean() {
-  const t = batchTarget.value;
-  if (!t) return;
-  const labels = new Map(t.items.map((it) => [it.id, it.name]));
+  const target = batchTarget.value;
+  if (!target) return;
+  const labels = new Map(target.items.map((it) => [it.id, rowFullName(it)]));
   batchTarget.value = null;
   try {
     const r = await invoke<CleanResult>("clean_items", {
       plan: {
-        group_id: t.groupId,
-        item_ids: t.items.map((it) => it.id),
+        group_id: target.groupId,
+        item_ids: target.items.map((it) => it.id),
         confirmed: true,
         scope: "repo",
       },
@@ -542,15 +549,15 @@ const splitReclaim = computed(() => {
  */
 const cols = computed(() => {
   const g = current.value;
-  if (!g) return [{ key: "name", label: "名称" }];
+  if (!g) return [{ key: "name", label: t("column.name") }];
   const out: { key: string; label: string; temporal?: boolean }[] = [
-    { key: "name", label: "名称" },
+    { key: "name", label: t("column.name") },
   ];
   for (const f of g.fields.slice(0, 3)) {
-    out.push({ key: f.key, label: f.label, temporal: f.temporal ?? undefined });
+    out.push({ key: f.key, label: renderText(f.label), temporal: f.temporal ?? undefined });
     // 总览的「占比」是前端派生列（标注在 lib/rows 的 shareLabelOf），紧跟体积：部分与整体并排才读得出比例
     if (f.key === "size" && g.id === "overview") {
-      out.push({ key: "share", label: "占比" });
+      out.push({ key: "share", label: t("column.share") });
     }
     if (
       f.key === "size" &&
@@ -558,7 +565,7 @@ const cols = computed(() => {
       splitReclaim.value &&
       !g.fields.some((x) => x.key === "reclaimable")
     ) {
-      out.push({ key: "reclaimable", label: "可回收" });
+      out.push({ key: "reclaimable", label: t("column.reclaimable") });
     }
   }
   return out;
@@ -620,7 +627,7 @@ const gridCols = computed(
  */
 function colTitle(c: { key: string }): string | undefined {
   if (c.key === "size" && !splitReclaim.value) {
-    return "体积；绿色数字表示该行整体可回收（移入废纸篓）";
+    return t("column.sizeHint");
   }
   return undefined;
 }
@@ -732,6 +739,13 @@ function toggleSort(key: string) {
 
 const dimsOfCurrent = computed(() => dimensionsFor(current.value));
 
+/**
+ * 首扫行账里「这一行点亮了吗」的判据。进度事件每次下发的 `Text` 都是新解析的
+ * 对象（不能按引用比），而成品串取决于事件到达时的界面语言（不能按串比），
+ * 所以比 JSON 形态——键与参数相同就是同一个分组。口径与 useAssets 的去重一致。
+ */
+const scanDoneKeys = computed(() => new Set(scanDoneLabels.value.map((l) => JSON.stringify(l))));
+
 /** 菜单里每项的计数按「其它维度已经筛过」的口径算——口径在 lib/rows。 */
 function optionCount(dimKey: string, value: string | null): number {
   return countMatches(baseRows.value, search.value, dims.value, dimKey, value);
@@ -764,7 +778,7 @@ const sections = computed(() => sectionsOf(visibleRows.value));
 // 只影响渲染，筛选维度仍读 item.tags 原始数据。
 const suppressedTags = computed(() => suppressedTagsOf(visibleRows.value));
 
-function rowTags(it: Item): string[] {
+function rowTags(it: Item): Tag[] {
   return rowTagsOf(it, suppressedTags.value);
 }
 
@@ -806,8 +820,7 @@ const selectedRow = computed(() => {
 });
 
 /** 可回收的口径提醒：总览 masthead 与状态栏共用一句，口径变了只改这里。 */
-const RECLAIM_ESTIMATE_HINT =
-  "可回收为估算值：含共享硬链接的目录（如 Rust 的 target/）可能偏高";
+const reclaimEstimateHint = computed(() => t("assets.reclaimEstimate"));
 
 /** 总览首块「本机合计」：总占用 / 可回收 / 分组数 / 条目总数 / 近 7 天有提交。口径在 lib/rows。 */
 const machineStats = computed(() => machineStatsOf(groups.value, now.value));
@@ -853,19 +866,21 @@ const savedAtLabel = computed(() =>
 /** 按钮文案随上下文：组视图 = 重扫本组（秒级）；总览与无数据态 = 全量重扫。
  *  扫描中区分单组/全量：单组没有多组比例可报（total=1），报正在扫谁。 */
 const rescanLabel = computed(() => {
-  if (!loading.value) return isOverview.value || !current.value ? "重扫" : "重扫本组";
+  if (!loading.value) {
+    return isOverview.value || !current.value ? t("assets.rescan") : t("assets.rescanGroup");
+  }
   const p = progress.value;
-  if (!p) return "扫描中";
+  if (!p) return t("assets.scanning");
   return p.total === 1
     ? p.label
-      ? `正在扫描 ${p.label}`
-      : "扫描中"
-    : `扫描中 ${p.done}/${p.total}`;
+      ? t("assets.scanningLabel", { label: renderText(p.label) })
+      : t("assets.scanning")
+    : t("assets.scanningProgress", { done: p.done, total: p.total });
 });
 
 /** 与 rescanLabel 同一个判据（总览或无数据 = 全量），别让 hover 提示跟实际行为打架。 */
 const rescanTitle = computed(() =>
-  isOverview.value || !current.value ? "重扫全部分组" : "只重扫当前分组，几秒完成",
+  isOverview.value || !current.value ? t("assets.rescanAllTitle") : t("assets.rescanGroupTitle"),
 );
 
 async function onRescan() {
@@ -874,9 +889,9 @@ async function onRescan() {
   const r = isOverview.value || !gid ? await rescan() : await rescanGroup(gid);
   if (r.ok) {
     flashChanged(before);
-    toast.success("扫描完成");
+    toast.success(t("assets.scanComplete"));
   } else {
-    toast.error(`扫描失败：${r.message}`);
+    toast.error(t("assets.scanFailed", { message: r.message }));
   }
 }
 </script>
@@ -885,7 +900,7 @@ async function onRescan() {
   <div class="flex h-full min-h-0 flex-col">
     <!-- 工具栏（AssetsToolbar）：标题与重扫文案父算好传入，中段筛选走插槽。 -->
     <AssetsToolbar
-      :title="current?.label ?? (loading ? '首次扫描…' : '无数据')"
+      :title="current ? groupLabelOf(current) : loading ? t('assets.titleFirstScan') : t('assets.titleNoData')"
       :loading="loading"
       :is-overview="isOverview"
       v-model:inspector-open="inspectorOpen"
@@ -904,7 +919,7 @@ async function onRescan() {
         @click="toggleBatchMode"
       >
         <ListChecks aria-hidden="true" />
-        批量清理
+        {{ t("assets.batchClean") }}
       </Button>
       <FilterMenu
         v-if="dimsOfCurrent.length"
@@ -933,7 +948,7 @@ async function onRescan() {
     >
       <AlertTriangle class="mt-px size-4 shrink-0 text-destructive" />
       <div class="min-w-0 text-xs text-destructive">
-        <p class="font-medium">扫描失败</p>
+        <p class="font-medium">{{ t("assets.bannerScanFailed") }}</p>
         <p class="mt-0.5 break-all opacity-80">{{ error }}</p>
       </div>
     </div>
@@ -960,22 +975,22 @@ async function onRescan() {
             <LoaderCircle
               class="size-4 motion-safe:animate-spin motion-reduce:animate-[spin_2.5s_linear_infinite] text-muted-foreground"
             />
-            <p class="text-xs text-foreground">正在首次扫描本机…</p>
+            <p class="text-xs text-foreground">{{ t("assets.firstScanMessage") }}</p>
           </div>
           <p v-if="!progress" class="mt-2 text-[11px] text-muted-foreground">
-            约 26 秒，之后打开直接读缓存
+            {{ t("assets.firstScanHint") }}
           </p>
           <!-- 完成的组名点亮、待扫的灰着。3/4 这类计数进工具栏按钮了，这里不复读 -->
           <ul v-else class="mt-3">
             <li
-              v-for="label in progress.labels"
-              :key="label"
+              v-for="(label, li) in progress.labels"
+              :key="li"
               class="flex h-[26px] items-center border-t border-border/40 text-xs"
               :class="
-                scanDoneLabels.includes(label) ? 'text-foreground' : 'text-muted-foreground'
+                scanDoneKeys.has(JSON.stringify(label)) ? 'text-foreground' : 'text-muted-foreground'
               "
             >
-              {{ label }}
+              {{ renderText(label) }}
             </li>
           </ul>
         </div>
@@ -984,7 +999,7 @@ async function onRescan() {
           v-else-if="!loading && !error && !current"
           class="px-3 py-6 text-xs text-muted-foreground"
         >
-          尚无数据，点顶栏「重扫」开始
+          {{ t("assets.noDataHint") }}
         </p>
 
         <template v-else-if="current">
@@ -997,7 +1012,7 @@ async function onRescan() {
           <div v-if="isOverview && machineStats.total > 0" class="px-3 pb-1 pt-7">
             <div class="flex flex-wrap items-end justify-between gap-x-10 gap-y-4">
               <div class="min-w-0">
-                <div class="text-[11px] tracking-[0.18em] text-muted-foreground">本机合计</div>
+                <div class="text-[11px] tracking-[0.18em] text-muted-foreground">{{ t("assets.overviewTotal") }}</div>
                 <!-- 42px masthead（2026-10-25 自 30px 上探）：总览是唯一的整页报告位，
                      主角数字要撑得起页面的空白；仍是正文字体 tabular（U15 定的方向），
                      .hero-figure 墨色退一档，大而不抢账目。
@@ -1007,9 +1022,9 @@ async function onRescan() {
                 </p>
               </div>
               <div class="flex flex-wrap items-end gap-x-10 gap-y-3">
-                <Hint :text="RECLAIM_ESTIMATE_HINT">
+                <Hint :text="reclaimEstimateHint">
                   <div>
-                    <div class="text-[11px] tracking-[0.18em] text-muted-foreground">可回收</div>
+                    <div class="text-[11px] tracking-[0.18em] text-muted-foreground">{{ t("assets.overviewReclaim") }}</div>
                     <ByteValue
                       class="mt-1.5 block text-[15px] leading-none text-reclaim"
                       :bytes="machineStats.reclaim"
@@ -1018,15 +1033,15 @@ async function onRescan() {
                   </div>
                 </Hint>
                 <div>
-                  <div class="text-[11px] tracking-[0.18em] text-muted-foreground">分组数</div>
+                  <div class="text-[11px] tracking-[0.18em] text-muted-foreground">{{ t("assets.overviewGroups") }}</div>
                   <div class="mt-1.5 text-[15px] font-medium leading-none tabular-nums">
-                    {{ machineStats.count }}<span class="ml-0.5 text-[11px] font-normal text-muted-foreground">个</span>
+                    {{ machineStats.count }}<span class="ml-1 text-[11px] font-normal text-muted-foreground">{{ t("assets.groupUnit") }}</span>
                   </div>
                 </div>
                 <div>
-                  <div class="text-[11px] tracking-[0.18em] text-muted-foreground">近 7 天有提交</div>
+                  <div class="text-[11px] tracking-[0.18em] text-muted-foreground">{{ t("assets.overviewRecent") }}</div>
                   <div class="mt-1.5 text-[15px] font-medium leading-none tabular-nums">
-                    {{ machineStats.recent }}<span class="ml-0.5 text-[11px] font-normal text-muted-foreground">个仓库</span>
+                    {{ machineStats.recent }}<span class="ml-1 text-[11px] font-normal text-muted-foreground">{{ t("assets.repoUnit") }}</span>
                   </div>
                 </div>
               </div>
@@ -1048,7 +1063,7 @@ async function onRescan() {
               v-if="batchMode"
               role="checkbox"
               :aria-checked="allVisibleBatchSelected ? 'true' : someVisibleBatchSelected ? 'mixed' : 'false'"
-              aria-label="全选当前视图的可清理行"
+              :aria-label="t('assets.selectAllAria')"
               class="flex items-center justify-center"
               :disabled="!visibleBatchRows.length"
               @click="toggleAllVisible"
@@ -1067,10 +1082,10 @@ async function onRescan() {
             <button
               class="flex min-w-0 items-center gap-1 text-left transition-colors hover:text-foreground"
               :class="sortKey === 'name' ? 'text-foreground' : ''"
-              :aria-label="`按名称排序${sortKey === 'name' ? (sortDesc ? '，当前降序' : '，当前升序') : ''}`"
+              :aria-label="t('assets.sortAria', { label: t('column.name'), state: sortKey === 'name' ? (sortDesc ? t('assets.sortStateDesc') : t('assets.sortStateAsc')) : '' })"
               @click="toggleSort('name')"
             >
-              名称
+              {{ t("column.name") }}
               <component v-if="sortKey === 'name'" :is="sortDesc ? ArrowDown : ArrowUp" class="size-3 shrink-0" aria-hidden="true" />
             </button>
             <Hint
@@ -1081,7 +1096,7 @@ async function onRescan() {
               <button
                 class="flex min-w-0 items-center gap-1 transition-colors hover:text-foreground"
                 :class="[c.align === 'text-right' ? 'justify-end' : '', sortKey === c.key ? 'text-foreground' : '']"
-                :aria-label="`按${c.label}排序${sortKey === c.key ? (sortDesc ? '，当前降序' : '，当前升序') : ''}`"
+                :aria-label="t('assets.sortAria', { label: c.label, state: sortKey === c.key ? (sortDesc ? t('assets.sortStateDesc') : t('assets.sortStateAsc')) : '' })"
                 @click="toggleSort(c.key)"
               >
                 <span class="truncate">{{ c.label }}</span>
@@ -1104,13 +1119,13 @@ async function onRescan() {
               v-if="sec.key"
               class="flex items-baseline justify-between px-3 pb-1 pt-4"
             >
-              <span class="text-[11px] font-semibold text-muted-foreground">{{ sec.key }}</span>
+              <span class="text-[11px] font-semibold text-muted-foreground">{{ sec.label || sec.key }}</span>
               <span class="text-[11px] tabular-nums text-muted-foreground">
                 <ByteValue :bytes="sectionSize(sec.rows)" />
                 <!-- 绿色语义收敛在 --reclaim token（U14）：浅 6.51:1 / 深 8.91:1，
                      11px 数字也过 4.5:1；调色只动 token，不在这里挑 Tailwind 色号。 -->
                 <template v-if="sectionReclaim(sec.rows) > 0">
-                  · 可回收
+                  · {{ t("assets.overviewReclaim") }}
                   <ByteValue
                     class="text-reclaim"
                     :bytes="sectionReclaim(sec.rows)"
@@ -1184,17 +1199,17 @@ async function onRescan() {
                       v-if="rowTags(row.item).length"
                       class="flex max-w-[40%] shrink-0 items-baseline gap-1 overflow-hidden"
                     >
-                      <template v-for="(t, ti) in rowTags(row.item)" :key="t">
+                      <template v-for="(tag, ti) in rowTags(row.item)" :key="tag.key">
                         <span
                           v-if="ti"
                           class="shrink-0 text-[11px] text-muted-foreground"
                           aria-hidden="true"
                         >·</span>
-                        <Hint :text="tagHint(t)">
+                        <Hint :text="tagHint(tag)">
                           <span
                             class="shrink-0 whitespace-nowrap text-[11px]"
-                            :class="isBlockerTag(t) ? 'font-medium text-foreground' : 'text-muted-foreground'"
-                          >{{ t }}</span>
+                            :class="isBlockerTag(tag) ? 'font-medium text-foreground' : 'text-muted-foreground'"
+                          >{{ renderText(tag.label) }}</span>
                         </Hint>
                       </template>
                     </span>
@@ -1249,38 +1264,38 @@ async function onRescan() {
 
           <div v-if="!visibleRows.length" class="px-3 py-6">
             <div v-if="reposEmpty" class="max-w-[600px]" :aria-busy="!!repoRootsPending">
-              <h2 class="text-xs font-medium text-foreground">{{ current.error ? "未能完成仓库扫描" : "未发现 Git 仓库" }}</h2>
-              <p v-if="current.error" class="mt-1 text-[11px] text-destructive [overflow-wrap:anywhere]">{{ current.error }}</p>
-              <h3 class="mt-3 text-[11px] text-muted-foreground">{{ current.error ? "当前扫描范围" : "已扫描范围" }}</h3>
+              <h2 class="text-xs font-medium text-foreground">{{ current.error ? t("assets.reposScanFailedTitle") : t("assets.reposEmptyTitle") }}</h2>
+              <p v-if="current.error" class="mt-1 text-[11px] text-destructive [overflow-wrap:anywhere]">{{ renderText(current.error) }}</p>
+              <h3 class="mt-3 text-[11px] text-muted-foreground">{{ current.error ? t("assets.reposScopeCurrent") : t("assets.reposScopeScanned") }}</h3>
               <ul v-if="current.notes?.length" class="mt-1 space-y-1">
-                <li v-for="note in current.notes" :key="note" class="select-text text-[11px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{{ note }}</li>
+                <li v-for="(note, ni) in current.notes" :key="ni" class="select-text text-[11px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{{ renderText(note) }}</li>
               </ul>
-              <p v-else class="mt-1 text-[11px] text-muted-foreground">当前快照未记录扫描范围，请重扫本组。</p>
-              <p v-if="repoRootsPending === 'loading'" role="status" class="mt-3 text-[11px] text-muted-foreground">正在读取扫描目录…</p>
+              <p v-else class="mt-1 text-[11px] text-muted-foreground">{{ t("assets.reposScopeMissing") }}</p>
+              <p v-if="repoRootsPending === 'loading'" role="status" class="mt-3 text-[11px] text-muted-foreground">{{ t("assets.loadingRoots") }}</p>
               <div v-if="repoRootsError" class="mt-3 text-[11px]">
                 <p role="alert" class="whitespace-pre-line text-destructive [overflow-wrap:anywhere]">{{ repoRootsError }}</p>
                 <Button variant="ghost" size="xs" class="mt-1 text-muted-foreground" :disabled="repoRootsBusy" @click="loadRoots">
                   <RefreshCw aria-hidden="true" />
-                  重新读取目录
+                  {{ t("assets.rereadRoots") }}
                 </Button>
               </div>
               <div class="mt-3 flex flex-wrap items-center gap-2">
                 <Button variant="outline" size="xs" :disabled="repoRootsBusy || !repoRoots" @click="addRoot">
                   <FolderPlus aria-hidden="true" />
-                  补充目录
+                  {{ t("assets.addRoot") }}
                 </Button>
-                <Button variant="ghost" size="xs" class="text-muted-foreground" @click="router.push('/settings')">管理扫描目录</Button>
-                <span v-if="repoRootsPending === 'adding' || repoRootsPending === 'removing'" role="status" class="text-[11px] text-muted-foreground">正在更新目录…</span>
+                <Button variant="ghost" size="xs" class="text-muted-foreground" @click="router.push('/settings')">{{ t("assets.manageRoots") }}</Button>
+                <span v-if="repoRootsPending === 'adding' || repoRootsPending === 'removing'" role="status" class="text-[11px] text-muted-foreground">{{ t("assets.updatingRoots") }}</span>
               </div>
             </div>
             <template v-else>
-              <p class="text-xs text-foreground">无匹配项</p>
+              <p class="text-xs text-foreground">{{ t("assets.noMatches") }}</p>
               <button
                 v-if="search || anyFilter"
                 class="mt-1 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
                 @click="((search = ''), clearFilters())"
               >
-                清除筛选条件
+                {{ t("filter.clear") }}
               </button>
             </template>
           </div>
@@ -1295,7 +1310,7 @@ async function onRescan() {
         v-if="current && !isOverview"
         as="aside"
         id="asset-inspector"
-        aria-label="检查器"
+        :aria-label="t('assets.inspectorAria')"
         class="inspector flex shrink-0 flex-col border-l border-border/60"
         :class="{ closed: !inspectorOpen }"
         :inert="!inspectorOpen"
@@ -1323,9 +1338,9 @@ async function onRescan() {
            同一块位置换内容而不是再叠一条栏，布局高度不变。 -->
       <template v-if="batchMode">
         <span class="tabular-nums text-foreground">
-          已选 {{ selectedBatchItems.length }} 项
+          {{ t("assets.batchSelected", { count: selectedBatchItems.length }) }}
           <template v-if="batchSelectedBytes > 0">
-            · 可回收 <ByteValue class="text-reclaim" :bytes="batchSelectedBytes" />
+            · {{ t("assets.overviewReclaim") }} <ByteValue class="text-reclaim" :bytes="batchSelectedBytes" />
           </template>
         </span>
         <div class="flex items-center gap-2">
@@ -1335,7 +1350,7 @@ async function onRescan() {
             class="h-6 text-[11px] text-muted-foreground"
             @click="exitBatchMode"
           >
-            取消
+            {{ t("common.cancel") }}
           </Button>
           <Button
             size="xs"
@@ -1344,7 +1359,7 @@ async function onRescan() {
             :disabled="!selectedBatchItems.length"
             @click="askBatchClean"
           >
-            移入废纸篓…
+            {{ t("assets.batchTrash") }}
           </Button>
         </div>
       </template>
@@ -1355,8 +1370,8 @@ async function onRescan() {
            换成条目总数（各分组「条目」列之和），这页唯一没在别处出现的合计；
            其余视图维持 行数 · 合计。 -->
       <span class="tabular-nums text-foreground">
-        <template v-if="isOverview">{{ machineStats.items }} 项</template>
-        <template v-else>{{ visibleRows.length }} 项 · <ByteValue :bytes="statusSum" /></template>
+        <template v-if="isOverview">{{ t("assets.statusItems", { count: machineStats.items }) }}</template>
+        <template v-else>{{ t("assets.statusItems", { count: visibleRows.length }) }} · <ByteValue :bytes="statusSum" /></template>
       </span>
       <div class="flex items-center gap-3">
         <!-- 数据新鲜度挪到状态栏常驻：此前只挂在「重扫」按钮的 title 上，
@@ -1367,22 +1382,22 @@ async function onRescan() {
              一个元素，条件为假时插槽是空的。 -->
         <Hint
           v-if="viewSavedAt"
-          :text="stale ? '已超过一天，建议重扫' : '本视图数据的扫描时间'"
+          :text="stale ? t('assets.staleHint') : t('assets.savedAtHint')"
         >
           <span
             :key="viewSavedAt"
             class="updated tabular-nums"
             :class="stale ? 'text-foreground' : ''"
           >
-            数据更新于 {{ savedAtLabel }}
+            {{ t("assets.dataUpdatedAt", { ago: savedAtLabel }) }}
           </span>
         </Hint>
         <Hint
           v-if="statusReclaim > 0"
-          :text="RECLAIM_ESTIMATE_HINT"
+          :text="reclaimEstimateHint"
         >
           <span class="tabular-nums">
-            可回收
+            {{ t("assets.overviewReclaim") }}
             <ByteValue class="text-reclaim" :bytes="statusReclaim" />
           </span>
         </Hint>

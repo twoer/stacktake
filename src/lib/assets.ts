@@ -5,8 +5,16 @@
  * （后续拆出的 InspectorPanel）。「渲染一条 item 的某列 / 一条 item 的产物行」
  * 是数据形状的函数，不是某个组件的私事，放 lib 让两边 import 同一份。
  */
-import type { ArtifactEntry, AssetGroup, Item } from "@/lib/types";
-import { artifactBytes, formatMetric, formatMetricBytes, reclaimableOf } from "@/lib/types";
+import type { ArtifactEntry, AssetGroup, Item, Tag } from "@/lib/types";
+import {
+  artifactBytes,
+  formatMetric,
+  formatMetricBytes,
+  kindKeyOf,
+  kindLabelOf,
+  reclaimableOf,
+} from "@/lib/types";
+import { t, type MessageKey } from "@/lib/i18n";
 import { isLocalPath } from "@/lib/path";
 
 export function cell(it: Item, key: string, temporal?: boolean): string {
@@ -18,6 +26,10 @@ export function cell(it: Item, key: string, temporal?: boolean): string {
     if ((m.t === "b" || m.t === "i") && m.v <= 0) return "—";
     return formatMetricBytes(m);
   }
+  // 类别列显示展示名，不显示 `metrics.kind` 的原值：那个中文词表是筛选与分节
+  // 的**取值**（语言无关才正确），给人看的是 `kind_label`。老缓存没有
+  // kind_label，kindLabelOf 会退回原值，与改前一致。
+  if (key === "kind") return kindLabelOf(it) || "—";
   return formatMetric(m, temporal);
 }
 
@@ -36,46 +48,57 @@ export function artifactRowsOf(item: Item | null): ArtifactRow[] {
 }
 
 /** 筛选维度：一条 item 的维度取值在不同分组装的是不同的东西（toolchain 的
- *  group_key 是「栈」、ai_tools 是「工具名」…），维度由分组声明。 */
+ *  group_key 是「栈」、ai_tools 是「工具名」…），维度由分组声明。
+ *
+ * `options` 每项两半：`value` 是后端词表里的取值（比较用它，语言无关），
+ * `label` 是给人看的展示名（P2 起由后端 `Text` 下发，切语言只重渲染）。 */
+export interface DimensionOption {
+  value: string;
+  label: string;
+}
+
 export interface Dimension {
   key: string;
   label: string;
-  options: string[];
+  options: DimensionOption[];
 }
 
-/** 标签 → 悬停提示的文案。表格行与检查器共用（2026-10-24 随检查器拆分下沉）。 */
-const TAG_HINTS: Record<string, string> = {
-  大: "体积超过 200 MB",
-  陈旧: "超过 180 天没有提交",
-  未推送:
-    "有未推送提交，或推送状态核查不出来（没配 upstream / 游离 HEAD / git 失败）。核查不出的按有未推送处理，整仓删除会被拒绝",
-  有改动: "工作区有未提交改动，整仓删除会被拒绝",
-  "有 stash": "git stash 非空。stash 藏在 .git 里，整仓进废纸篓会连它一起没",
-  嵌套: "位于另一个仓库目录内；它的体积已从父仓库扣除，不重复计入",
-  有产物: "含 node_modules / target / dist 等构建产物目录，可单独清理，不动源码",
-  可清理: "有删除入口：移入废纸篓，可从废纸篓恢复",
+/**
+ * 标签 → 悬停提示的键。按标签的 **`key`**（ASCII，Rust 侧 `Tag::new` 定死）映射，
+ * 不按展示名——展示名现在随语言变，用它当键会在英文界面下一条提示都给不出。
+ */
+const TAG_HINT_KEYS: Record<string, MessageKey> = {
+  large: "tagHint.large",
+  stale: "tagHint.stale",
+  unpushed: "tagHint.unpushed",
+  modified: "tagHint.modified",
+  stashed: "tagHint.stashed",
+  nested: "tagHint.nested",
+  artifacts: "tagHint.artifacts",
+  cleanable: "tagHint.cleanable",
 };
 
 /** 认不出的标签不给提示（Hint 没文案就不挂实例），宁可不说话也别瞎解释。 */
-export function tagHint(t: string): string | undefined {
-  return TAG_HINTS[t];
+export function tagHint(tag: Tag): string | undefined {
+  const key = TAG_HINT_KEYS[tag.key];
+  return key ? t(key) : undefined;
 }
 
 /**
  * 两档墨色的分界：这三条意味着「整仓清理会被拒」（repos 复核的 fail-closed 三态），
  * 是行动预警；嵌套 / 有产物 / 陈旧 / 大只是口径说明。预警不能长得跟脚注一样——
  * 落的是「值近黑、元数据灰」这条层级原则（Assets.vue 数据列注释），不引入新颜色。
- * 名单钉着 Rust 侧的拒绝判据，新增阻断性标签时在这里登记。
+ * 名单钉的是标签的 `key`（Rust 侧 `Tag::new` 的字面量），新增阻断性标签时在这里登记。
  */
-export const BLOCKER_TAGS: ReadonlySet<string> = new Set(["未推送", "有改动", "有 stash"]);
+export const BLOCKER_TAGS: ReadonlySet<string> = new Set(["unpushed", "modified", "stashed"]);
 
-export function isBlockerTag(t: string): boolean {
-  return BLOCKER_TAGS.has(t);
+export function isBlockerTag(tag: Tag): boolean {
+  return BLOCKER_TAGS.has(tag.key);
 }
 
 /** 阻断项排最前：标签段限宽会静默截断，被裁掉的必须是说明项，不能是预警。 */
-export function orderedTags(tags: string[]): string[] {
-  return [...tags.filter(isBlockerTag), ...tags.filter((t) => !isBlockerTag(t))];
+export function orderedTags(tags: Tag[]): Tag[] {
+  return [...tags.filter(isBlockerTag), ...tags.filter((tag) => !isBlockerTag(tag))];
 }
 
 /**
@@ -184,8 +207,18 @@ export function cleanKindOf(groupId: string | null): CleanKind {
   return (groupId && CLEAN_KIND_BY_GROUP[groupId]) || "cache";
 }
 
-/** AI 工具行的类别标签（后端 `metrics.kind`）；缺失时给中性词，不猜。 */
+/** AI 工具行的类别标签（展示名，`kind_label` 优先）；缺失时给中性词，不猜。 */
 export function aiKindLabel(item: Item | null): string {
-  const m = item?.metrics.kind;
-  return m && m.t === "s" ? String(m.v) : "数据";
+  return kindLabelOf(item) || t("common.data");
+}
+
+/**
+ * 这一行是不是「会话」类（删了不会再生，确认弹窗要单独说这一条）。
+ *
+ * 比的是 `metrics.kind` 的**原始值**，不是展示名——展示名现在随语言变，
+ * `aiKindLabel(it) === "会话"` 在英文界面下永远为假，那条警告就静默消失了。
+ * 原始值是后端词表（`ai_tools.rs` 的 `Category::label()`），与语言无关。
+ */
+export function isSessionKind(item: Item | null | undefined): boolean {
+  return kindKeyOf(item) === "会话";
 }

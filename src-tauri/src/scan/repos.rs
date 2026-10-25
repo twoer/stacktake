@@ -11,7 +11,7 @@
 use crate::scan::dirsize;
 use crate::scan::{
     ArtifactEntry, AssetGroup, CleanFailure, CleanPlan, CleanResult, Field, Item, MetricValue,
-    Scanner,
+    Scanner, Tag, Text, TextArg,
 };
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -447,10 +447,6 @@ impl Scanner for RepoScanner {
     fn id(&self) -> &'static str {
         "repos"
     }
-    fn label(&self) -> &'static str {
-        "Git 仓库"
-    }
-
     /// S2 / D1 拍板后返回 `true`：repos 是唯一接了清理入口的分组
     /// （`clean_items` command）。其它分组的 `cleanable` 只是「可回收」口径，
     /// 没有对应的删除实现——返回 true 会宣称一个点不动的能力。
@@ -459,17 +455,17 @@ impl Scanner for RepoScanner {
     }
 
     fn scan(&self) -> AssetGroup {
-        let mut notes: Vec<String> = Vec::new();
+        let mut notes: Vec<Text> = Vec::new();
 
         // 主目录不可用且没有补充目录时，不能对空 roots 取下标。
         if self.roots.is_empty() {
             return AssetGroup {
                 id: self.id().into(),
-                label: self.label().into(),
-                summary: "未配置根目录".into(),
+                label: Text::key(format!("data.group.{}", self.id())),
+                summary: Text::key("data.summary.reposNoRoots"),
                 fields: repo_fields(),
                 items: vec![],
-                notes: Some(vec!["未能定位用户主目录，无法推断扫描根目录".into()]),
+                notes: Some(vec![Text::key("data.note.reposNoHome")]),
                 error: None,
                 supports_clean: false,
             };
@@ -505,11 +501,13 @@ impl Scanner for RepoScanner {
         if hits.is_empty() {
             return AssetGroup {
                 id: self.id().into(),
-                label: self.label().into(),
-                summary: "未找到仓库".into(),
+                label: Text::key(format!("data.group.{}", self.id())),
+                summary: Text::key("data.summary.reposEmpty"),
                 fields: repo_fields(),
                 items: vec![],
-                notes: Some(vec![format!("扫描根目录：{}", display_roots(&self.roots))]),
+                notes: Some(vec![
+                    Text::fmt("data.note.reposRoots").arg("roots", display_roots(&self.roots)),
+                ]),
                 error: None,
                 supports_clean: false,
             };
@@ -532,10 +530,7 @@ impl Scanner for RepoScanner {
             }
         }
         if !nested.is_empty() {
-            notes.push(format!(
-                "检测到 {} 个嵌套仓库，父仓库体积已排除子仓库部分",
-                nested.len()
-            ));
+            notes.push(Text::fmt("data.note.reposNested").arg("count", TextArg::num(nested.len())));
         }
 
         // ---- 3. 并发采集 ----
@@ -563,17 +558,15 @@ impl Scanner for RepoScanner {
         let cleanable_count = items.iter().filter(|i| i.cleanable).count();
         let reclaimable: u64 = items.iter().filter_map(|i| i.reclaimable).sum();
 
-        let summary = format!(
-            "{} 个仓库 · 合计 {} · {} 个可回收 · 共 {}",
-            items.len(),
-            human_bytes(total),
-            cleanable_count,
-            human_bytes(reclaimable)
-        );
+        let summary = Text::fmt("data.summary.repos")
+            .arg("count", TextArg::num(items.len()))
+            .arg("total", TextArg::bytes(total))
+            .arg("clean", TextArg::num(cleanable_count))
+            .arg("reclaim", TextArg::bytes(reclaimable));
 
         AssetGroup {
             id: self.id().into(),
-            label: self.label().into(),
+            label: Text::key(format!("data.group.{}", self.id())),
             summary,
             fields: repo_fields(),
             items,
@@ -594,19 +587,19 @@ fn repo_fields() -> Vec<Field> {
     vec![
         Field {
             key: "size".into(),
-            label: "体积".into(),
+            label: Text::key("data.field.size"),
             numeric: Some(true),
             temporal: None,
         },
         Field {
             key: "last_commit".into(),
-            label: "最后提交".into(),
+            label: Text::key("data.field.lastCommit"),
             numeric: Some(true),
             temporal: Some(true),
         },
         Field {
             key: "branch".into(),
-            label: "分支".into(),
+            label: Text::key("data.field.branch"),
             numeric: None,
             temporal: None,
         },
@@ -643,27 +636,27 @@ impl RepoInfo {
         let cleanable =
             is_clean_candidate(self.size, days, risky, self.dirty_files, self.has_stash);
 
-        let mut tags = vec![];
+        let mut tags: Vec<Tag> = vec![];
         if stale {
-            tags.push("陈旧".to_string());
+            tags.push(Tag::new("stale"));
         }
         if big {
-            tags.push("大".to_string());
+            tags.push(Tag::new("large"));
         }
         if risky {
-            tags.push("未推送".to_string());
+            tags.push(Tag::new("unpushed"));
         }
         if self.dirty_files > 0 {
             // 只做布尔标记，具体处数已在 dirty 指标里。
             // 早先写成 `脏{N}`，结果 tag 栏按字符串排序变成「脏1 脏10 脏100 脏108 脏11」，
             // 筛选器完全失去意义。
-            tags.push("有改动".to_string());
+            tags.push(Tag::new("modified"));
         }
         if self.is_nested {
-            tags.push("嵌套".to_string());
+            tags.push(Tag::new("nested"));
         }
         if self.has_stash {
-            tags.push("有 stash".to_string());
+            tags.push(Tag::new("stashed"));
         }
 
         let mut metrics: HashMap<String, MetricValue> = HashMap::new();
@@ -685,18 +678,18 @@ impl RepoInfo {
             "last_commit".into(),
             match self.last_commit_ts {
                 Some(ts) => MetricValue::Int(ts),
-                None => MetricValue::text("无提交"),
+                None => MetricValue::key("data.value.noCommit"),
             },
         );
         metrics.insert(
             "branch".into(),
-            MetricValue::text(if self.branch.is_empty() || self.branch == "HEAD" {
+            if self.branch.is_empty() || self.branch == "HEAD" {
                 // 空串 = 命令失败；"HEAD" = detached——abbrev-ref 对游离 HEAD
                 // 返回的是字面 "HEAD"，不是空串，按空串判断永远接不到这一档
-                "游离".into()
+                MetricValue::key("data.value.detachedBranch")
             } else {
-                self.branch.clone()
-            }),
+                MetricValue::text(self.branch.clone())
+            },
         );
         let status = match self.push {
             Push::Ahead { ahead, behind } => format!("↑{ahead} ↓{behind}"),
@@ -751,7 +744,7 @@ impl RepoInfo {
         let artifact_bytes: u64 = artifact_entries.iter().map(|entry| entry.size_bytes).sum();
         if !self.artifacts.is_empty() {
             metrics.insert("artifacts".into(), MetricValue::Bytes(artifact_bytes));
-            tags.push("有产物".to_string());
+            tags.push(Tag::new("artifacts"));
             let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
             for (p, _) in &self.artifacts {
                 let n = p
@@ -786,10 +779,14 @@ impl RepoInfo {
             id: self.path.display().to_string(),
             tags,
             name: self.name,
+            label: None,
+            short_label: None,
+            group_label: None,
             // 仓库名本身就是这一行的全部信息，不分节（G1：group_key 为 None 即不分节）
             group_key: None,
             path: self.path.display().to_string(),
             metrics,
+            kind_label: None,
             detail: Some(detail),
             artifact_entries,
             cleanable,
@@ -1037,7 +1034,7 @@ pub fn human_bytes(b: u64) -> String {
     }
 }
 
-fn display_roots(roots: &[PathBuf]) -> String {
+pub(crate) fn display_roots(roots: &[PathBuf]) -> String {
     roots
         .iter()
         .map(|p| {

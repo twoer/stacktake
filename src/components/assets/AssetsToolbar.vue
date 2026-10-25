@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { PanelRight, RefreshCw, Search, X } from "@lucide/vue";
+import { t } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import Hint from "@/components/Hint.vue";
 
@@ -51,7 +52,7 @@ const emit = defineEmits<{
          留在 DOM 里 `/` 还能把焦点打进一个看不见的输入框。恢复时删掉 v-if 即可，
          下方的过滤逻辑与 `/` 快捷键守卫都原样保留。 -->
     <label v-if="false" class="group relative flex h-6 shrink-0">
-      <span class="sr-only">按名称或路径筛选</span>
+      <span class="sr-only">{{ t("toolbar.searchAria") }}</span>
       <!-- mt-px：label 改成 flex 后 input 正好占满 24px，但 WebKit 对 input 内部文字的
            放置仍比盒子几何中心低 0.75px（改 line-height 无效，实测 leading-none 也是同一个值）。
            实测下移 1px 后偏差从 +0.75 收到 -0.25。 -->
@@ -62,7 +63,7 @@ const emit = defineEmits<{
         id="row-search"
         v-model="search"
         type="search"
-        placeholder="筛选名称 / 路径"
+        :placeholder="t('toolbar.searchPlaceholder')"
         class="h-6 w-32 appearance-none rounded-md bg-muted/60 pl-6 pr-6 text-xs text-foreground transition-[width] duration-150 placeholder:text-muted-foreground focus:w-52 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:w-40 sm:focus:w-56"
       />
       <!-- `/` 聚焦快捷键一直存在但没提示过；有输入内容或已聚焦时让位给清除按钮 -->
@@ -77,7 +78,7 @@ const emit = defineEmits<{
       <button
         v-if="search"
         class="absolute right-1 top-1/2 mt-px -translate-y-1/2 text-muted-foreground hover:text-foreground"
-        aria-label="清除筛选"
+        :aria-label="t('toolbar.clearSearch')"
         @click="search = ''"
       >
         <X class="size-3" />
@@ -88,13 +89,13 @@ const emit = defineEmits<{
          避让只会把重扫推离右缘（pr-[140px] 在 Windows 真机上就是这么露馅的）。 -->
     <div class="flex shrink-0 items-center gap-1">
       <!-- 总览没有检查器（数字都在主区首块），开关一并隐藏，点了也是空操作 -->
-      <Hint v-if="!isOverview" :text="inspectorOpen ? '隐藏检查器' : '显示检查器'">
+      <Hint v-if="!isOverview" :text="inspectorOpen ? t('toolbar.hideInspector') : t('toolbar.showInspector')">
         <Button
           size="xs"
           variant="ghost"
           class="h-6 w-6 px-0 text-muted-foreground [&_svg]:size-3.5"
           :class="inspectorOpen ? 'bg-muted text-foreground' : ''"
-          :aria-label="inspectorOpen ? '隐藏检查器' : '显示检查器'"
+          :aria-label="inspectorOpen ? t('toolbar.hideInspector') : t('toolbar.showInspector')"
           :aria-pressed="inspectorOpen"
           aria-controls="asset-inspector"
           @click="inspectorOpen = !inspectorOpen"

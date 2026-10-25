@@ -22,11 +22,194 @@ pub mod wsl;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// 后端下发的展示文案。
+///
+/// 缓存里存的是**键与参数**，不是某一种语言的成品文案——切语言只重渲染，
+/// 不重扫、不重新 IPC。三种形态与前端 `src/lib/types.ts` 的 `Text` 一一对应：
+/// - `r` 原始数据（路径、仓库名、品牌名），不翻译
+/// - `k` 静态文案键，对应 `src/locales/*.json`
+/// - `f` 带命名参数的文案键（`a` 里的参数还可以是 `Text` 或数字 / 字节）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "t", content = "v")]
+pub enum Text {
+    #[serde(rename = "r")]
+    Raw(String),
+    #[serde(rename = "k")]
+    Key(String),
+    #[serde(rename = "f")]
+    Fmt(FmtText),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FmtText {
+    pub k: String,
+    #[serde(default)]
+    pub a: HashMap<String, TextArg>,
+}
+
+/// `FmtText` 的参数。原始数据与键之外还能直接塞数字 / 字节，让单位换算与
+/// 千分位由前端按当前语言做——后端拼好的「1.5 GB」在 es 下会缺小数点逗号。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "t", content = "v")]
+pub enum TextArg {
+    #[serde(rename = "r")]
+    Raw(String),
+    #[serde(rename = "k")]
+    Key(String),
+    #[serde(rename = "f")]
+    Fmt(FmtText),
+    #[serde(rename = "n")]
+    Num(i64),
+    #[serde(rename = "b")]
+    Bytes(u64),
+}
+
+impl Text {
+    pub fn raw(s: impl Into<String>) -> Self {
+        Text::Raw(s.into())
+    }
+
+    pub fn key(k: impl Into<String>) -> Self {
+        Text::Key(k.into())
+    }
+
+    /// `Text::fmt("summary.repos").arg("count", 3usize)` 起步，参数按需追加。
+    pub fn fmt(k: impl Into<String>) -> Self {
+        Text::Fmt(FmtText {
+            k: k.into(),
+            a: HashMap::new(),
+        })
+    }
+
+    pub fn arg(mut self, name: &str, value: impl Into<TextArg>) -> Self {
+        if let Text::Fmt(FmtText { a, .. }) = &mut self {
+            a.insert(name.to_string(), value.into());
+        }
+        self
+    }
+}
+
+impl From<&str> for Text {
+    fn from(s: &str) -> Self {
+        Text::Raw(s.to_string())
+    }
+}
+
+impl From<String> for Text {
+    fn from(s: String) -> Self {
+        Text::Raw(s)
+    }
+}
+
+impl TextArg {
+    pub fn num(n: usize) -> Self {
+        TextArg::Num(n as i64)
+    }
+
+    pub fn bytes(b: u64) -> Self {
+        TextArg::Bytes(b)
+    }
+}
+
+impl From<Text> for TextArg {
+    fn from(t: Text) -> Self {
+        match t {
+            Text::Raw(s) => TextArg::Raw(s),
+            Text::Key(k) => TextArg::Key(k),
+            Text::Fmt(f) => TextArg::Fmt(f),
+        }
+    }
+}
+
+impl From<&str> for TextArg {
+    fn from(s: &str) -> Self {
+        TextArg::Raw(s.to_string())
+    }
+}
+
+impl From<String> for TextArg {
+    fn from(s: String) -> Self {
+        TextArg::Raw(s)
+    }
+}
+
+/// 字段标签的统一键。后端各 Scanner 只挑 `key`，译文在 `data.field.*`。
+pub fn field_text(key: &str) -> Text {
+    Text::key(format!("data.field.{key}"))
+}
+
+/// 类别（`metrics.kind`）的展示名。
+///
+/// **`metrics.kind` 的取值保持原样**：它是筛选与口径测试读的稳定取值，
+/// 改成 ASCII 键会连带改掉缓存里的词汇。展示统一从这里取键——
+/// 新增类别时记得在这里加一条，否则回落到原值（中文会漏出来）。
+pub fn kind_text(kind: &str) -> Text {
+    let slug = match kind {
+        "下载缓存" => "downloadCache",
+        "依赖缓存" => "dependencyCache",
+        "构建缓存" => "buildCache",
+        "构建产物" => "buildArtifacts",
+        "打包产物" => "buildArtifacts",
+        "已安装" => "installed",
+        "归档" => "archive",
+        "设备支持" => "deviceSupport",
+        "设备符号" => "deviceSymbols",
+        "模拟器" => "simulator",
+        "模拟器运行时" => "simulatorRuntime",
+        "缓存" => "cache",
+        "IDE" => "ide",
+        "IDE 数据" => "ideData",
+        "系统镜像" => "systemImage",
+        "SDK 组件" => "sdkComponent",
+        "配置" => "config",
+        "工程目录" => "project",
+        "运行时" => "runtime",
+        "分发版" => "distribution",
+        "日志" => "log",
+        "会话" => "session",
+        "技能" => "skill",
+        "索引" => "index",
+        "未知" => "unknown",
+        "虚拟磁盘" => "virtualDisk",
+        "WSL1（无虚拟磁盘）" => "wsl1NoDisk",
+        "虚拟磁盘缺失" => "virtualDiskMissing",
+        _ => return Text::raw(kind),
+    };
+    Text::key(format!("data.kind.{slug}"))
+}
+
+/// 带展示名的标签。`key` 是稳定取值（筛选、抑制、阻断判据都读它），
+/// `label` 才是当前语言下给人看的那一档。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Tag {
+    pub key: String,
+    pub label: Text,
+}
+
+impl Tag {
+    /// 固定标签：取值只做身份，展示走 `data.tag.<key>`。
+    pub fn new(key: &str) -> Self {
+        Tag {
+            key: key.to_string(),
+            label: Text::key(format!("data.tag.{key}")),
+        }
+    }
+
+    /// 动态标签（`权限{:o}`、`重复×N`）：取值本身就是展示文案，不翻译。
+    pub fn raw(s: impl Into<String>) -> Self {
+        let s = s.into();
+        Tag {
+            key: s.clone(),
+            label: Text::Raw(s),
+        }
+    }
+}
+
 /// 前端据此渲染表头。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Field {
     pub key: String,
-    pub label: String,
+    pub label: Text,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub numeric: Option<bool>,
     /// 相对时间展示（多久之前）
@@ -56,11 +239,19 @@ pub enum MetricValue {
     Int(i64),
     #[serde(rename = "z")]
     Bool(bool),
+    /// 界面文案（「未知」「无提交」）——存键不存成品，切语言只重渲染。
+    /// 与 `Text` 不同，它只用于指标格，键一定能在语言包里查到。
+    #[serde(rename = "k")]
+    TextKey(String),
 }
 
 impl MetricValue {
     pub fn text(s: impl Into<String>) -> Self {
         MetricValue::Text(s.into())
+    }
+
+    pub fn key(k: impl Into<String>) -> Self {
+        MetricValue::TextKey(k.into())
     }
 }
 
@@ -73,10 +264,22 @@ pub struct ArtifactEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Item {
     pub id: String,
-    /// 分组标签，如「公司 / 个人」「陈旧 / 大」
+    /// 稳定标签：`key` 参与筛选 / 抑制 / 阻断判据，`label` 是展示文案。
     #[serde(default)]
-    pub tags: Vec<String>,
+    pub tags: Vec<Tag>,
+    /// 原始名：搜索、排序与 `group_key` 前缀约定都读它，**不随语言变**。
     pub name: String,
+    /// 展示名。缺省 = `name`（仓库 / 模型这类纯数据名不需要翻译）；
+    /// 工具与类别名由后端下发键，切语言只重渲染。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<Text>,
+    /// 分节行里去掉分组前缀后的展示名（`group_key · ` 之后那半截）。
+    /// 缺省时前端按 `group_key` 前缀切分 `name`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_label: Option<Text>,
+    /// 分节标题的展示名。缺省 = `group_key` 原值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_label: Option<Text>,
     /// 分节依据：这一条属于本组哪个「维度取值」（G1 起）。`None` = 本组不分节。
     ///
     /// 在此之前前端是靠解析 `name` 里的 ` · ` 前缀分节的——那是个显示约定，
@@ -88,6 +291,9 @@ pub struct Item {
     pub path: String,
     #[serde(default)]
     pub metrics: HashMap<String, MetricValue>,
+    /// 类别列的展示名。缺省 = `metrics.kind` 的原值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind_label: Option<Text>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<HashMap<String, String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -101,15 +307,15 @@ pub struct Item {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetGroup {
     pub id: String,
-    pub label: String,
+    pub label: Text,
     /// 单行概览
-    pub summary: String,
+    pub summary: Text,
     pub fields: Vec<Field>,
     pub items: Vec<Item>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notes: Option<Vec<String>>,
+    pub notes: Option<Vec<Text>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub error: Option<Text>,
     /// **本组有没有删除实现**（S3 新增）。
     ///
     /// 前端据此决定要不要渲染清理入口，**别在前端写死分组 id**——S3 之前
@@ -219,7 +425,12 @@ pub fn synthesize_overview(groups: &[AssetGroup]) -> AssetGroup {
         .map(|g| Item {
             id: format!("{OVERVIEW_ID}:{}", g.id),
             tags: vec![],
-            name: g.label.clone(),
+            // 行的展示名就是分组名（Text）；`name` 只做稳定身份，总览行不参与搜索
+            // 以外的字符串逻辑，用 id 比塞一份某语言的副本更稳。
+            name: g.id.clone(),
+            label: Some(g.label.clone()),
+            short_label: None,
+            group_label: None,
             group_key: None,
             path: format!("overview://{}", g.id),
             metrics: HashMap::from([
@@ -230,6 +441,7 @@ pub fn synthesize_overview(groups: &[AssetGroup]) -> AssetGroup {
                 ),
                 ("count".into(), MetricValue::Int(g.items.len() as i64)),
             ]),
+            kind_label: None,
             detail: None,
             artifact_entries: vec![],
             cleanable: false,
@@ -242,29 +454,27 @@ pub fn synthesize_overview(groups: &[AssetGroup]) -> AssetGroup {
 
     AssetGroup {
         id: OVERVIEW_ID.into(),
-        label: "总览".into(),
-        summary: format!(
-            "{} 个分组 · 合计 {} · 可回收 {}",
-            groups.len(),
-            crate::scan::repos::human_bytes(total),
-            crate::scan::repos::human_bytes(reclaim),
-        ),
+        label: Text::key("data.group.overview"),
+        summary: Text::fmt("data.summary.overview")
+            .arg("count", TextArg::num(groups.len()))
+            .arg("total", TextArg::bytes(total))
+            .arg("reclaim", TextArg::bytes(reclaim)),
         fields: vec![
             Field {
                 key: "size".into(),
-                label: "体积".into(),
+                label: Text::key("data.field.size"),
                 numeric: Some(true),
                 temporal: None,
             },
             Field {
                 key: "reclaimable".into(),
-                label: "可回收".into(),
+                label: Text::key("data.field.reclaimable"),
                 numeric: Some(true),
                 temporal: None,
             },
             Field {
                 key: "count".into(),
-                label: "条目".into(),
+                label: Text::key("data.field.count"),
                 numeric: Some(true),
                 temporal: None,
             },
@@ -344,7 +554,13 @@ pub struct CleanResult {
 /// 重扫时间就累加一层。新增实现都是普通结构体，自动满足，不用做什么。
 pub trait Scanner: Send + Sync {
     fn id(&self) -> &'static str;
-    fn label(&self) -> &'static str;
+
+    /// 分组展示名。**默认由 id 推键**（`data.group.<id>`），分组名只有语言包一个
+    /// 真相；扫描进度与侧栏因此不可能各说各话。
+    fn label(&self) -> Text {
+        Text::key(format!("data.group.{}", self.id()))
+    }
+
     fn scan(&self) -> AssetGroup;
 
     /// 清理能力标志，前端据此决定是否渲染清理入口。

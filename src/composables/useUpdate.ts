@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "vue-sonner";
 import type { DownloadProgress } from "@/lib/types";
+import { t } from "@/lib/i18n";
 import { checkForUpdate, RELEASES_URL, type CheckResult } from "@/lib/release";
 
 /**
@@ -94,7 +95,7 @@ export function useUpdate() {
   /** 设置页手动点：这次失败必须给个说法，否则按钮像没反应。 */
   async function checkNow() {
     if (!(await ensureVersion())) {
-      message.value = "读不到当前版本号";
+      message.value = t("update.readVersionFailed");
       state.value = "error";
       return;
     }
@@ -121,13 +122,13 @@ export function useUpdate() {
       dlState.value = "done";
       dlPath.value = path;
       // 退出是 Rust 侧延一拍做的，这里只负责把「为什么它要消失」说在前面
-      toast.success(`已下载 ${latest.value} 并打开安装包，即将退出以便替换`, {
+      toast.success(t("update.downloadedToast", { version: latest.value }), {
         description: path,
       });
     } catch (e) {
       dlState.value = "idle";
       dlMessage.value = String(e);
-      toast.error(`下载失败：${String(e)}`);
+      toast.error(t("update.downloadFailedToast", { message: String(e) }));
     }
   }
 

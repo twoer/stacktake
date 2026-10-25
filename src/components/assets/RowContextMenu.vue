@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { Copy, FolderOpen } from "@lucide/vue";
 import type { Item } from "@/lib/types";
+import { t } from "@/lib/i18n";
 import { revealLabel } from "@/lib/path";
 
 /**
@@ -53,7 +54,7 @@ const menuStyle = computed(() => {
       @click="emit('reveal', menu.item)"
     >
       <FolderOpen class="size-3.5 shrink-0 text-muted-foreground" />
-      {{ revealLabel }}
+      {{ revealLabel() }}
     </button>
     <button
       role="menuitem"
@@ -61,7 +62,7 @@ const menuStyle = computed(() => {
       @click="emit('copy', menu.item)"
     >
       <Copy class="size-3.5 shrink-0 text-muted-foreground" />
-      复制路径
+      {{ t("actions.copyPath") }}
     </button>
   </div>
 </template>

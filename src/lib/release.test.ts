@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { applyLocale } from "@/lib/i18n";
 import { checkForUpdate, isNewer } from "@/lib/release";
 
 // 版本比较直接决定设置页「有没有新版」：漏报是错过修复，误报是让用户白装一遍。
@@ -26,6 +27,9 @@ describe("isNewer", () => {
 });
 
 describe("checkForUpdate —— 本工具唯一一次对外请求的状态机", () => {
+  // 报错消息是查表结果，测试环境（node）的系统语言是 en；显式钉中文，
+  // 让断言守住「错误文案确实来自语言包」而不是某台机器碰巧的语言。
+  beforeEach(() => applyLocale("zh-CN"));
   afterEach(() => vi.unstubAllGlobals());
 
   it("404 = 仓库还没有 release，按无更新处理而不是出错", async () => {

@@ -1,8 +1,32 @@
 /** 与 Rust 侧 `scan::AssetGroup` 对应的类型定义。 */
 
+import { formatBytesLocalized, formatNumber, relativeTime, renderText, t, translate } from "@/lib/i18n";
+
+/**
+ * 展示文案（P2 起后端各分组下发的就是它）。
+ *
+ * 缓存里存的是**键与参数**而不是某一种语言的成品文案：切语言只重渲染，
+ * 不需要重扫；五种语言的译文都在 `src/locales/`。
+ * - `r` = 原始数据（路径、仓库名、品牌名），不翻译
+ * - `k` = 静态文案键
+ * - `f` = 带命名参数的文案键
+ */
+export type Text =
+  | { t: "r"; v: string }
+  | { t: "k"; v: string }
+  | { t: "f"; v: { k: string; a: Record<string, TextArg> } };
+
+export type TextArg = Text | { t: "n"; v: number } | { t: "b"; v: number };
+
+/** Rust `scan::Tag`：`key` 参与筛选 / 抑制 / 阻断判据（语言无关），`label` 只展示。 */
+export interface Tag {
+  key: string
+  label: Text
+}
+
 export interface Field {
   key: string
-  label: string
+  label: Text
   numeric?: boolean
   temporal?: boolean
 }
@@ -19,8 +43,20 @@ export interface Item {
    * （B1 起；此前不含路径，清理入口因此拿不到删除目标）。
    */
   id: string
-  tags: string[]
+  tags: Tag[]
+  /**
+   * 原始名：**搜索、排序、分节前缀与 `group_key` 约定都读它**，不随语言变。
+   * 渲染请用 `itemDisplay()`（有 `label` / `short_label` 时走展示字段）。
+   */
   name: string
+  /** 整行展示名。缺省 = `name`（仓库 / 模型这类纯数据名不需要翻译）。 */
+  label?: Text | null
+  /** 分节行里去掉 `group_key · ` 前缀后的展示名。缺省时前端按前缀切分 `name`。 */
+  short_label?: Text | null
+  /** 分节标题的展示名。缺省 = `group_key` 原值。 */
+  group_label?: Text | null
+  /** 类别列的展示名。缺省 = `metrics.kind` 原值（那是筛选词表，不是文案）。 */
+  kind_label?: Text | null
   /**
    * 分节依据：这一条属于本组哪个「维度取值」（G1 起正式化）。
    *
@@ -44,12 +80,12 @@ export interface Item {
 
 export interface AssetGroup {
   id: string
-  label: string
-  summary: string
+  label: Text
+  summary: Text
   fields: Field[]
   items: Item[]
-  notes?: string[]
-  error?: string
+  notes?: Text[]
+  error?: Text
   /**
    * 本组有没有删除实现（S3 起由后端下发）。
    *
@@ -63,6 +99,45 @@ export interface AssetGroup {
    * 会话 / 缓存三类行标 `cleanable`。缺省视作 false（后端只在 true 时下发）。
    */
   supports_clean?: boolean
+}
+
+// ---- 展示名 ----
+//
+// 渲染读这三个函数，**不读 `name` / `group_key` / `metrics.kind` 的原串**：
+// 后三者是搜索、筛选、分节与后端复核的词表，语言无关才正确（切英文时
+// 「npm 缓存」这一行的 `name` 仍是中文，否则英文界面里筛完的口径就对不上账）。
+// 后端为每个展示位下发了对应的 `Text`（`label` / `short_label` / `group_label` /
+// `kind_label`），缺省才回落原串——品牌名、版本号、模型名这类本来就不用翻译。
+
+/** 分组展示名（侧栏、页面标题、空态）。 */
+export function groupLabelOf(g: AssetGroup): string {
+  return renderText(g.label) || g.id;
+}
+
+/** 行的展示名（整行形态，不剥分节前缀）。 */
+export function itemLabelOf(it: Item | null | undefined): string {
+  if (!it) return "";
+  return it.label ? renderText(it.label) : it.name;
+}
+
+/** 分节标题的展示名：`group_label` 优先，缺省用 `group_key` 原值。 */
+export function sectionLabelOf(it: Item): string {
+  return it.group_label ? renderText(it.group_label) : (it.group_key ?? "");
+}
+
+/** 类别列的展示名：`kind_label` 优先，缺省回落 `metrics.kind` 的原值。 */
+export function kindLabelOf(it: Item | null | undefined): string {
+  if (it?.kind_label) return renderText(it.kind_label);
+  const m = it?.metrics.kind;
+  if (!m) return "";
+  if (m.t === "k") return translate(m.v);
+  return m.t === "s" ? String(m.v) : "";
+}
+
+/** `kind` 指标的**原始值**（筛选词表，与语言无关）。判「这一行是不是某类别」用它，别比展示名。 */
+export function kindKeyOf(it: Item | null | undefined): string {
+  const m = it?.metrics.kind;
+  return m && m.t === "s" ? String(m.v) : "";
 }
 
 /** Rust `cache::CachedSnapshot` 的对应结构。 */
@@ -167,10 +242,13 @@ export interface ScanProgress {
   done: number
   /** 总分组数 */
   total: number
-  /** 刚完成的分组名。扫描器并行跑，完成顺序不固定，展示用 */
-  label: string
+  /**
+   * 刚完成的分组名（`Text`，并行扫描下完成顺序不固定）。
+   * 首帧（0 进度）没有「刚完成的分组」，后端下发 `null`。
+   */
+  label: Text | null
   /** 本次扫描的全部分组名（注册序）。首扫空态据此预排行账，完成一行点亮一行 */
-  labels: string[]
+  labels: Text[]
 }
 
 /** Rust `update.rs::DownloadProgress` 的对应结构——下载进度事件（"update-download-progress"）的载荷。 */
@@ -193,6 +271,8 @@ export type MetricValue =
   | { t: "b"; v: number }
   | { t: "i"; v: number }
   | { t: "z"; v: boolean }
+  /** 界面文案（「未知」「无提交」）——存键，切语言只重渲染。 */
+  | { t: "k"; v: string }
 
 /** 取裸值。 */
 export function metricValue(m: MetricValue): string | number | boolean {
@@ -242,13 +322,15 @@ export function groupReclaimable(g: AssetGroup): number {
 export function formatMetric(m: MetricValue, temporal?: boolean): string {
   switch (m.t) {
     case "z":
-      return m.v ? "是" : "否"
+      return m.v ? t("common.yes") : t("common.no")
     case "i":
-      return temporal ? formatAgo(m.v) : m.v.toLocaleString("zh-CN")
+      return temporal ? formatAgo(m.v) : formatNumber(m.v)
     case "b":
-      return temporal ? formatAgo(m.v) : m.v.toLocaleString("zh-CN")
+      return temporal ? formatAgo(m.v) : formatNumber(m.v)
     case "s":
       return m.v
+    case "k":
+      return translate(m.v)
   }
 }
 
@@ -258,19 +340,7 @@ export function formatMetricBytes(m: MetricValue): string {
 }
 
 export function formatBytes(b: number): string {
-  if (b <= 0) return "0 B"
-  const units = ["B", "KB", "MB", "GB", "TB"]
-  let v = b
-  let i = 0
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i++
-  }
-  if (i === 0) return `${b} B`
-  // 只抹掉多余的「.0」（109.0 GB → 109 GB），保留真正的非零小数：
-  // 取整会让人分不出 1.4 GB 与 1.1 GB 谁大——那是比尾随 .0 更糟的代价
-  const s = v.toFixed(1)
-  return `${s.endsWith(".0") ? s.slice(0, -2) : s} ${units[i]}`
+  return formatBytesLocalized(b)
 }
 
 /**
@@ -285,21 +355,20 @@ export function formatBytesParts(b: number): { n: string; u: string } {
 }
 
 /** `nowSecs` 默认墙钟；传时间针（useAssets 的 `now`）可让界面上的「X 前」
- *  跟着钟走，而不是冻在最后一次重渲染的那一刻。 */
+ *  跟着钟走，而不是冻在最后一次重渲染的那一刻。相对时间交给 Intl，复数与
+ *  语序由各语言自己处理；「刚刚」单列一条（RelativeTimeFormat 的 0 秒是
+ *  「0 分钟前」，不是人话）。 */
 export function formatAgo(unixSeconds: number, nowSecs: number = Date.now() / 1000): string {
   const diff = nowSecs - unixSeconds
-  if (diff < 0) return "刚刚"
+  if (diff < 60) return t("time.justNow")
   const d = Math.floor(diff / 86400)
   if (d === 0) {
     const h = Math.floor(diff / 3600)
-    if (h === 0) {
-      const m = Math.floor(diff / 60)
-      return m <= 0 ? "刚刚" : `${m} 分钟前`
-    }
-    return `${h} 小时前`
+    if (h === 0) return relativeTime(-Math.floor(diff / 60), "minute")
+    return relativeTime(-h, "hour")
   }
-  if (d < 30) return `${d} 天前`
+  if (d < 30) return relativeTime(-d, "day")
   const mo = Math.floor(d / 30)
-  if (mo < 12) return `${mo} 个月前`
-  return `${Math.floor(mo / 12)} 年前`
+  if (mo < 12) return relativeTime(-mo, "month")
+  return relativeTime(-Math.floor(mo / 12), "year")
 }

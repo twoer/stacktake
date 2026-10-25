@@ -25,7 +25,7 @@
 //! 也不注册清理命令（见 `mod.rs` 里清理入口的说明）。
 
 use crate::scan::repos::{dir_size_fast, human_bytes};
-use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner};
+use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner, Tag, Text, field_text};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -70,12 +70,12 @@ impl DockerScanner {
         notes.push("启动 Docker Desktop 后点「重扫」，就能看到镜像与卷的明细".into());
         AssetGroup {
             id: self.id().into(),
-            label: self.label().into(),
-            summary: reason.into(),
+            label: self.label(),
+            summary: Text::raw(reason.to_string()),
             fields: docker_fields(),
             items: vec![],
-            notes: Some(notes),
-            error: Some(reason.into()),
+            notes: Some(notes.into_iter().map(Text::from).collect()),
+            error: Some(Text::raw(reason.to_string())),
             supports_clean: false,
         }
     }
@@ -413,10 +413,6 @@ impl Scanner for DockerScanner {
         "docker"
     }
 
-    fn label(&self) -> &'static str {
-        "Docker"
-    }
-
     fn scan(&self) -> AssetGroup {
         // 这一项不依赖守护进程：没启动 Docker Desktop 也能看出它吃了多少磁盘
         let disk = self.desktop.as_deref().and_then(dir_size_fast);
@@ -473,11 +469,15 @@ impl Scanner for DockerScanner {
             items.push(Item {
                 id: format!("docker:image:{}", im.id),
                 tags: if unused {
-                    vec!["未被引用".into()]
+                    vec![Tag::new("unused")]
                 } else {
                     vec![]
                 },
                 name: format!("镜像 · {label}"),
+                label: None,
+                short_label: None,
+                group_label: None,
+                kind_label: None,
                 group_key: Some("镜像".into()),
                 path: format!("docker://{label}"),
                 metrics,
@@ -524,11 +524,15 @@ impl Scanner for DockerScanner {
             items.push(Item {
                 id: format!("docker:volume:{}", v.name),
                 tags: if unused {
-                    vec!["未被引用".into()]
+                    vec![Tag::new("unused")]
                 } else {
                     vec![]
                 },
                 name: format!("卷 · {}", v.name),
+                label: None,
+                short_label: None,
+                group_label: None,
+                kind_label: None,
                 group_key: Some("卷".into()),
                 path: format!("docker://volume/{}", v.name),
                 metrics,
@@ -593,22 +597,22 @@ impl Scanner for DockerScanner {
             notes.push(format!("{skipped} 行输出格式不符预期，已跳过"));
         }
 
-        let summary = format!(
+        let summary = Text::raw(format!(
             "{} 个镜像 · {} 个卷 · 合计 {} · {} 项未被引用 · 共 {}",
             images.len(),
             volumes.len(),
             human_bytes(reported_total),
             unused_count,
             human_bytes(reclaimable)
-        );
+        ));
 
         AssetGroup {
             id: self.id().into(),
-            label: self.label().into(),
+            label: self.label(),
             summary,
             fields: docker_fields(),
             items,
-            notes: Some(notes),
+            notes: Some(notes.into_iter().map(Text::from).collect()),
             error: None,
             supports_clean: false,
         }
@@ -620,19 +624,19 @@ fn docker_fields() -> Vec<Field> {
     vec![
         Field {
             key: "size".into(),
-            label: "体积".into(),
+            label: field_text("size"),
             numeric: Some(true),
             temporal: None,
         },
         Field {
             key: "created".into(),
-            label: "创建".into(),
+            label: field_text("created"),
             numeric: Some(true),
             temporal: Some(true),
         },
         Field {
             key: "refs".into(),
-            label: "引用".into(),
+            label: field_text("refs"),
             numeric: Some(true),
             temporal: None,
         },

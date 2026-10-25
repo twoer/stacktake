@@ -49,7 +49,7 @@
 
 use crate::scan::dirsize::{dir_size, file_size};
 use crate::scan::repos::{human_bytes, mtime_secs};
-use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner};
+use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner, Text, TextArg, field_text};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -81,13 +81,13 @@ fn local_model_fields() -> Vec<Field> {
     vec![
         Field {
             key: "size".into(),
-            label: "体积".into(),
+            label: field_text("size"),
             numeric: Some(true),
             temporal: None,
         },
         Field {
             key: "last_modified".into(),
-            label: "最后修改".into(),
+            label: field_text("lastModified"),
             numeric: Some(true),
             temporal: Some(true),
         },
@@ -98,17 +98,13 @@ fn local_model_fields() -> Vec<Field> {
 fn mtime_metric(p: &Path) -> MetricValue {
     match mtime_secs(p) {
         Some(ts) => MetricValue::Int(ts),
-        None => MetricValue::text("未知"),
+        None => MetricValue::key("data.value.unknown"),
     }
 }
 
 impl Scanner for LocalModelsScanner {
     fn id(&self) -> &'static str {
         "local_models"
-    }
-
-    fn label(&self) -> &'static str {
-        "本地模型"
     }
 
     fn scan(&self) -> AssetGroup {
@@ -139,17 +135,19 @@ impl Scanner for LocalModelsScanner {
             .sum();
 
         let notes = vec![
-            "模型是资产不是缓存：删一个要重新下载（几十 GB 起步），所以本组永不标可回收".into(),
-            "Ollama 按 manifest 解析每个模型引用的权重层；权重文件缺失时只计磁盘上存在的部分，缺失层数写在明细里".into(),
-            "同一模型装了多个 tag 时体积按引用各计一次；删掉单个 tag 实际腾出多少看明细的「共享层」一行（只在真有共享时出现）".into(),
-            "LM Studio 只扫 models/ 与 hub/models/——~/.lmstudio 下的会话、日志与凭据目录不是模型资产，本工具不枚举".into(),
-            "HuggingFace 按模型目录整体计（snapshots 是指向 blobs 的软链，不重复计）".into(),
+            Text::key("data.note.localModels.assetNotCache"),
+            Text::key("data.note.localModels.ollamaLayers"),
+            Text::key("data.note.localModels.sharedLayers"),
+            Text::key("data.note.localModels.lmstudioScope"),
+            Text::key("data.note.localModels.huggingfaceScope"),
         ];
 
         AssetGroup {
             id: self.id().into(),
-            label: self.label().into(),
-            summary: format!("{} 个模型 · 合计 {}", count, human_bytes(total)),
+            label: self.label(),
+            summary: Text::fmt("data.summary.localModels")
+                .arg("count", TextArg::num(count))
+                .arg("total", TextArg::bytes(total)),
             fields: local_model_fields(),
             items,
             notes: Some(notes),
@@ -296,6 +294,10 @@ fn ollama_item(
         id: format!("model:ollama:{}", manifest.display()),
         tags: vec![],
         name: format!("Ollama · {name}"),
+        label: None,
+        short_label: None,
+        group_label: None,
+        kind_label: None,
         group_key: Some("Ollama".into()),
         path: manifest.display().to_string(),
         metrics: [
@@ -394,6 +396,10 @@ fn model_item(dir: &Path, publisher: &str, staging: bool) -> Item {
         id: format!("model:lmstudio:{}", dir.display()),
         tags: vec![],
         name: format!("LM Studio · {model}"),
+        label: None,
+        short_label: None,
+        group_label: None,
+        kind_label: None,
         group_key: Some("LM Studio".into()),
         path: dir.display().to_string(),
         metrics,
@@ -431,6 +437,10 @@ fn huggingface_items(hub: &Path) -> Vec<Item> {
                 id: format!("model:huggingface:{}", dir.display()),
                 tags: vec![],
                 name: format!("HuggingFace · {org}/{name}"),
+                label: None,
+                short_label: None,
+                group_label: None,
+                kind_label: None,
                 group_key: Some("HuggingFace".into()),
                 path: dir.display().to_string(),
                 metrics,

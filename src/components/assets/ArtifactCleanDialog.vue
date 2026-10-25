@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { Item } from "@/lib/types";
-import { formatBytes } from "@/lib/types";
 import { artifactRowsOf } from "@/lib/assets";
+import { rowFullName } from "@/lib/rows";
+import { t } from "@/lib/i18n";
 import { useModalFocus } from "@/composables/useModalFocus";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -43,9 +44,9 @@ const artifactPicked = ref<Set<string>>(new Set());
 // 打开即全选（拆出前 askCleanArtifacts 的默认）；关闭时清空，下次打开重建。
 watch(
   () => props.target,
-  (t) => {
-    artifactPicked.value = t
-      ? new Set(artifactRowsOf(t).map((r) => r.relative_path))
+  (target) => {
+    artifactPicked.value = target
+      ? new Set(artifactRowsOf(target).map((r) => r.relative_path))
       : new Set();
   },
 );
@@ -88,9 +89,9 @@ function toggleArtifact(rel: string, on: boolean) {
 }
 
 function onConfirm() {
-  const t = props.target;
-  if (!t) return;
-  emit("confirm", [...artifactPicked.value], t);
+  const target = props.target;
+  if (!target) return;
+  emit("confirm", [...artifactPicked.value], target);
 }
 </script>
 
@@ -106,19 +107,17 @@ function onConfirm() {
       aria-modal="true"
       class="relative w-[420px] rounded-lg border border-border bg-card p-4 shadow-lg"
     >
-      <p class="text-[13px] font-medium">清理构建产物</p>
+      <p class="text-[13px] font-medium">{{ t("clean.artifact.title") }}</p>
       <p class="mt-2 text-xs leading-relaxed text-muted-foreground">
-        将把勾选的 <span class="text-foreground">{{ artifactPicked.size }} 个</span>构建产物目录移入废纸篓。
-        <span class="text-foreground">源码与 .git 不受影响</span
-        >，重新构建或安装依赖时会再次生成。
+        {{ t("clean.artifact.body", { count: artifactPicked.size }) }}
       </p>
       <dl class="mt-3 space-y-1 rounded-md bg-muted/50 p-2 text-xs">
         <div class="flex items-baseline justify-between gap-2">
-          <dt class="shrink-0 text-muted-foreground">仓库</dt>
-          <dd class="min-w-0 truncate font-medium">{{ target.name }}</dd>
+          <dt class="shrink-0 text-muted-foreground">{{ t("clean.fieldRepo") }}</dt>
+          <dd class="min-w-0 truncate font-medium">{{ rowFullName(target) }}</dd>
         </div>
         <div class="flex items-baseline justify-between gap-2">
-          <dt class="shrink-0 text-muted-foreground">路径</dt>
+          <dt class="shrink-0 text-muted-foreground">{{ t("common.path") }}</dt>
           <Hint :text="target.path">
             <dd class="min-w-0 truncate font-mono">{{ target.path }}</dd>
           </Hint>
@@ -131,16 +130,16 @@ function onConfirm() {
              行 px-1，差一像素就读不成一列。半选态表意，可见文案让位给节标题；
              「全选」语义走 title / aria-label，别把字样加回来——列头勾选框
              自身就是表格的通用范式。 -->
-        <Hint text="全选">
+        <Hint :text="t('clean.artifact.selectAll')">
           <label
             class="flex items-center gap-1.5 pl-2.5 text-[11px] text-muted-foreground"
           >
             <Checkbox
-              aria-label="全选"
+              :aria-label="t('clean.artifact.selectAll')"
               :model-value="artifactAllPicked ? true : artifactSomePicked ? 'indeterminate' : false"
               @update:model-value="(v) => toggleAllArtifacts(v === true)"
             />
-            <span class="font-semibold">产物目录</span>
+            <span class="font-semibold">{{ t("clean.artifact.dirs") }}</span>
           </label>
         </Hint>
         <!-- text-[11px] 与检查器子表同理：不给的话右侧体积 span 以继承的 16px 当 strut，
@@ -184,24 +183,23 @@ function onConfirm() {
       </div>
 
       <p class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-        不检查未推送提交或未提交改动——清产物不碰源码。服务端会按白名单重新找出产物目录，以点击那一刻为准；藏有 Git 仓库的产物目录会被拒绝。
+        {{ t("clean.artifact.review") }}
         <br />
-        <span class="opacity-70">已选为估算值：含共享硬链接的目录可能偏高。</span>
+        <span class="opacity-70">{{ t("clean.artifact.estimate") }}</span>
       </p>
       <div class="mt-4 flex items-center justify-between gap-2">
         <span class="text-[11px] tabular-nums text-muted-foreground">
-          已选 {{ artifactPicked.size }} 个 · 约
-          <span class="text-foreground">{{ formatBytes(artifactPickedBytes) }}</span>
+          {{ t("clean.artifact.selectedSummary", { count: artifactPicked.size, bytes: { t: "b", v: artifactPickedBytes } }) }}
         </span>
         <div class="flex gap-2">
-          <Button data-dialog-cancel size="xs" variant="outline" @click="emit('cancel')">取消</Button>
+          <Button data-dialog-cancel size="xs" variant="outline" @click="emit('cancel')">{{ t("common.cancel") }}</Button>
           <Button
             size="xs"
             variant="destructive"
             :disabled="artifactPicked.size === 0"
             @click="onConfirm"
           >
-            确认移入废纸篓
+            {{ t("clean.confirm") }}
           </Button>
         </div>
       </div>

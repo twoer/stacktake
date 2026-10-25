@@ -1,10 +1,11 @@
 pub mod cache;
+pub mod locale;
 pub mod roots;
 pub mod scan;
 pub mod update;
 
 use scan::{
-    AssetGroup, CleanPlan, CleanResult, CleanScope, Scanner, ai_tools::AiToolsScanner,
+    AssetGroup, CleanPlan, CleanResult, CleanScope, Scanner, Text, ai_tools::AiToolsScanner,
     dev_env::dev_env_scanners, local_models::LocalModelsScanner, repos::RepoScanner,
     toolchain::ToolchainScanner, wsl::wsl_scanners,
 };
@@ -172,8 +173,9 @@ const SCAN_PROGRESS_EVENT: &str = "scan-progress";
 struct ScanProgress {
     done: usize,
     total: usize,
-    label: String,
-    labels: Vec<String>,
+    /// 刚完成的分组名；开扫那一拍还没有，发 `null`。
+    label: Option<Text>,
+    labels: Vec<Text>,
 }
 
 /// 真扫一次并写缓存。缓存写失败只影响下次启动速度，不该影响本次结果。
@@ -188,14 +190,14 @@ async fn run_full_scan(app: &AppHandle) -> Result<ScanResult, String> {
         use rayon::prelude::*;
         let scanners = scanners_with_roots(roots.paths);
         let total = scanners.len();
-        let labels: Vec<String> = scanners.iter().map(|s| s.label().to_string()).collect();
+        let labels: Vec<Text> = scanners.iter().map(|s| s.label()).collect();
 
         let _ = app_for_scan.emit(
             SCAN_PROGRESS_EVENT,
             ScanProgress {
                 done: 0,
                 total,
-                label: String::new(),
+                label: None,
                 labels: labels.clone(),
             },
         );
@@ -214,7 +216,7 @@ async fn run_full_scan(app: &AppHandle) -> Result<ScanResult, String> {
                     ScanProgress {
                         done: n,
                         total,
-                        label: g.label.clone(),
+                        label: Some(g.label.clone()),
                         labels: labels.clone(),
                     },
                 );
@@ -345,8 +347,8 @@ async fn run_group_scan(app: &AppHandle, group_id: &str) -> Result<ScanResult, S
             ScanProgress {
                 done: 0,
                 total: 1,
-                label: group_label.to_string(),
-                labels: vec![group_label.to_string()],
+                label: Some(group_label.clone()),
+                labels: vec![group_label],
             },
         );
         let g = scanner.scan();
@@ -355,7 +357,7 @@ async fn run_group_scan(app: &AppHandle, group_id: &str) -> Result<ScanResult, S
             ScanProgress {
                 done: 1,
                 total: 1,
-                label: g.label.clone(),
+                label: Some(g.label.clone()),
                 labels: vec![g.label.clone()],
             },
         );
@@ -610,6 +612,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            // 启动时读一次系统语言，给前端解析「跟随系统」用
+            locale::system_locale,
             rescan_now,
             rescan_group,
             get_repo_roots,

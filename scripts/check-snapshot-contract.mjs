@@ -13,8 +13,81 @@
 
 import { readFileSync } from 'node:fs'
 
-const METRIC_TAGS = new Set(['s', 'b', 'i', 'z'])
+// `Text` 是展示文案的三态（r 成品 / k 文案键 / f 带参文案键），Rust 侧
+// `scan::Text` 的 serde 形态。P2a 起分组名、概览、字段名、脚注、标签、行的四个
+// 展示位全换成它——界面切语言时只重渲染、不重扫，靠的就是这些位置下发的是键。
+// 校验器只验**形状**（键是不是成品中文由 Rust 侧那条门禁加语言目录查）。
+const TEXT_TAGS = new Set(['r', 'k', 'f'])
+const TEXT_ARG_TAGS = new Set(['r', 'k', 'f', 'n', 'b'])
+// 'k' = `MetricValue::TextKey`：指标格里的界面文案（「未知」「无提交」），存键不存成品。
+const METRIC_TAGS = new Set(['s', 'b', 'i', 'z', 'k'])
 const MAX_FIELDS = 3
+
+/** 递归验 `Text`；`where` 已经带上槽位名。 */
+function checkText(v, where, problems) {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+    problems.push(`${where}: 展示文案不是 {t,v} 对象：${JSON.stringify(v)}`)
+    return
+  }
+  if (!TEXT_TAGS.has(v.t)) {
+    problems.push(`${where}: 未知文案标签 t=${JSON.stringify(v.t)}（合法：r/k/f）`)
+    return
+  }
+  if (v.t === 'f') {
+    const f = v.v
+    if (f === null || typeof f !== 'object' || Array.isArray(f)) {
+      problems.push(`${where}: f 的载荷不是 {k,a} 对象`)
+      return
+    }
+    if (typeof f.k !== 'string' || !f.k) problems.push(`${where}: f.k 文案键为空`)
+    if (f.a !== undefined && (f.a === null || typeof f.a !== 'object' || Array.isArray(f.a))) {
+      problems.push(`${where}: f.a 参数表不是对象`)
+      return
+    }
+    for (const [name, arg] of Object.entries(f.a ?? {})) {
+      if (!name) problems.push(`${where}: 参数名为空`)
+      checkTextArg(arg, `${where}.f.a[${name}]`, problems)
+    }
+    return
+  }
+  // r / k 都是非空字符串：空串到界面上就是一格空白，和没下发没有区别
+  if (typeof v.v !== 'string' || !v.v) {
+    problems.push(`${where}: ${v.t} 的值应是非空字符串：${JSON.stringify(v.v)}`)
+  }
+}
+
+/** `TextArg`：文案之外还能直接塞数字 / 字节，单位换算与千分位留给前端按语言做。 */
+function checkTextArg(v, where, problems) {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+    problems.push(`${where}: 文案参数不是对象：${JSON.stringify(v)}`)
+    return
+  }
+  if (!TEXT_ARG_TAGS.has(v.t)) {
+    problems.push(`${where}: 未知参数标签 t=${JSON.stringify(v.t)}（合法：r/k/f/n/b）`)
+    return
+  }
+  if (v.t === 'n' || v.t === 'b') {
+    if (typeof v.v !== 'number' || !Number.isFinite(v.v)) {
+      problems.push(`${where}: t=${v.t} 的值应是数字：${JSON.stringify(v.v)}`)
+    } else if (v.t === 'b' && v.v < 0) {
+      problems.push(`${where}: 字节数出现负数 ${v.v}`)
+    }
+    return
+  }
+  checkText(v, where, problems)
+}
+
+/** 标签：`key` 是筛选/抑制/阻断的取值，`label` 是展示文案。 */
+function checkTag(t, where, problems) {
+  if (t === null || typeof t !== 'object' || Array.isArray(t)) {
+    problems.push(`${where}: 标签不是 {key,label} 对象：${JSON.stringify(t)}`)
+    return
+  }
+  if (typeof t.key !== 'string' || !t.key) {
+    problems.push(`${where}: 标签 key 为空或不是字符串`)
+  }
+  checkText(t.label, `${where}.label`, problems)
+}
 
 function checkMetricValue(v, where, problems) {
   if (v === null || typeof v !== 'object' || Array.isArray(v)) {
@@ -22,15 +95,23 @@ function checkMetricValue(v, where, problems) {
     return
   }
   if (!METRIC_TAGS.has(v.t)) {
-    problems.push(`${where}: 未知类型标签 t=${JSON.stringify(v.t)}（合法：s/b/i/z）`)
+    problems.push(`${where}: 未知类型标签 t=${JSON.stringify(v.t)}（合法：s/b/i/z/k）`)
     return
   }
   const t = typeof v.v
   const typeOk =
     (v.t === 's' && t === 'string') ||
+    (v.t === 'k' && t === 'string' && v.v.length > 0) ||
     (v.t === 'z' && t === 'boolean') ||
     ((v.t === 'b' || v.t === 'i') && t === 'number' && Number.isFinite(v.v))
-  if (!typeOk) problems.push(`${where}: t=${v.t} 与 v 的类型 ${t} 不匹配`)
+  if (!typeOk) {
+    // 键位空串单独说一句：它类型没错，但界面会印出一个空指标格
+    problems.push(
+      v.t === 'k' && t === 'string'
+        ? `${where}: 文案键是空串（前端会直接印键名或留空格）`
+        : `${where}: t=${v.t} 与 v 的类型 ${t} 不匹配`,
+    )
+  }
   // Int 允许负数（如 -1 哨兵值），Bytes 不允许
   if (v.t === 'b' && typeof v.v === 'number' && v.v < 0) {
     problems.push(`${where}: 字节数出现负数 ${v.v}`)
@@ -49,8 +130,16 @@ function checkItem(item, groupId, problems, warnings) {
     }
   }
   if (item.tags !== undefined) {
-    if (!Array.isArray(item.tags) || item.tags.some((t) => typeof t !== 'string')) {
-      problems.push(`${where}: tags 不是字符串数组`)
+    if (!Array.isArray(item.tags)) {
+      problems.push(`${where}: tags 不是数组`)
+    } else {
+      for (const t of item.tags) checkTag(t, `${where}.tag`, problems)
+    }
+  }
+  // 行的四个展示位（P2a）：可选，给了就必须是合法文案对象。
+  for (const k of ['label', 'short_label', 'group_label', 'kind_label']) {
+    if (item[k] !== undefined && item[k] !== null) {
+      checkText(item[k], `${where}.${k}`, problems)
     }
   }
   // 分节渲染：` · ` 前缀做小节标题，必须非空
@@ -152,11 +241,11 @@ function checkGroup(g, problems, warnings) {
     problems.push('分组不是对象')
     return
   }
-  for (const k of ['id', 'label', 'summary']) {
-    if (typeof g[k] !== 'string' || g[k].length === 0) {
-      problems.push(`${where}: ${k} 为空或不是字符串`)
-    }
+  if (typeof g.id !== 'string' || !g.id) {
+    problems.push(`${where}: id 为空或不是字符串`)
   }
+  checkText(g.label, `${where}.label`, problems)
+  checkText(g.summary, `${where}.summary`, problems)
 
   if (!Array.isArray(g.fields)) {
     problems.push(`${where}: fields 缺失或不是数组`)
@@ -171,9 +260,8 @@ function checkGroup(g, problems, warnings) {
         problems.push(`${where}: field 不是对象`)
         continue
       }
-      for (const k of ['key', 'label']) {
-        if (typeof f[k] !== 'string' || !f[k]) problems.push(`${where}: field.${k} 为空`)
-      }
+      if (typeof f.key !== 'string' || !f.key) problems.push(`${where}: field.key 为空`)
+      checkText(f.label, `${where}.field.label`, problems)
       for (const k of ['numeric', 'temporal']) {
         if (f[k] !== undefined && typeof f[k] !== 'boolean') {
           problems.push(`${where}: field.${k} 不是布尔`)
@@ -183,7 +271,7 @@ function checkGroup(g, problems, warnings) {
   }
 
   if (g.error !== undefined && g.error !== null) {
-    if (typeof g.error !== 'string') problems.push(`${where}: error 不是字符串`)
+    checkText(g.error, `${where}.error`, problems)
     if (Array.isArray(g.items) && g.items.length > 0) {
       problems.push(`${where}: 出错时仍有 ${g.items.length} 条明细（前端错误态不渲染明细）`)
     }
@@ -206,8 +294,10 @@ function checkGroup(g, problems, warnings) {
   }
 
   if (g.notes !== undefined && g.notes !== null) {
-    if (!Array.isArray(g.notes) || g.notes.some((n) => typeof n !== 'string')) {
-      problems.push(`${where}: notes 不是字符串数组`)
+    if (!Array.isArray(g.notes)) {
+      problems.push(`${where}: notes 不是数组`)
+    } else {
+      for (const n of g.notes) checkText(n, `${where}.note`, problems)
     }
   }
 }
@@ -260,21 +350,24 @@ function report(r) {
 
 /** 校验器自检：每个坏样本都必须被抓住，好样本必须通过。 */
 function selfTest() {
+  // 展示文案的三种形态各留一个合法样本：成品（品牌名）、键、带参键。
   const goodItem = {
     id: '/tmp/a',
-    name: '仓库 · a',
+    name: 'repo-a',
     path: '/tmp/a',
-    tags: ['可清理'],
-    metrics: { size: { t: 'b', v: 100 }, last_commit: { t: 'i', v: 1700000000 } },
+    label: { t: 'k', v: 'data.item.cargoRegistry' },
+    tags: [{ key: 'cleanable', label: { t: 'k', v: 'data.tag.cleanable' } }],
+    metrics: { size: { t: 'b', v: 100 }, last_commit: { t: 'i', v: 1700000000 }, branch: { t: 'k', v: 'data.value.noCommit' } },
     cleanable: true,
     reclaimable: 50,
   }
   const good = {
     id: 'g',
-    label: '测试分组',
-    summary: '1 条',
-    fields: [{ key: 'size', label: '体积', numeric: true }],
+    label: { t: 'k', v: 'data.group.repos' },
+    summary: { t: 'f', v: { k: 'data.summary.repos', a: { count: { t: 'n', v: 1 }, total: { t: 'b', v: 100 } } } },
+    fields: [{ key: 'size', label: { t: 'k', v: 'data.field.size' }, numeric: true }],
     items: [goodItem],
+    notes: [{ t: 'r', v: '只读文件名，不读内容' }],
   }
   const artifactEntry = { relative_path: 'packages/repo-a/node_modules', size_bytes: 100 }
   const artifactItem = {
@@ -309,18 +402,35 @@ function selfTest() {
     ['产物字节为无穷', withArtifactEntries([{ ...artifactEntry, size_bytes: Infinity }])],
     ['产物合计不一致', withArtifactEntries([{ ...artifactEntry, size_bytes: 99 }])],
     ['产物集合缺合计指标', { ...artifactGroup, items: [{ ...artifactItem, metrics: goodItem.metrics }] }],
-    ['字段超过三个', { ...good, fields: [{ key: 'a', label: 'a' }, { key: 'b', label: 'b' }, { key: 'c', label: 'c' }, { key: 'd', label: 'd' }] }],
+    ['字段超过三个', { ...good, fields: [{ key: 'a', label: { t: 'r', v: 'a' } }, { key: 'b', label: { t: 'r', v: 'b' } }, { key: 'c', label: { t: 'r', v: 'c' } }, { key: 'd', label: { t: 'r', v: 'd' } }] }],
     ['未知指标标签', { ...good, items: [{ ...goodItem, metrics: { size: { t: 'x', v: 1 } } }] }],
     ['标签与值类型不符', { ...good, items: [{ ...goodItem, metrics: { size: { t: 'b', v: '100' } } }] }],
     ['字节数为负', { ...good, items: [{ ...goodItem, metrics: { size: { t: 'b', v: -1 } } }] }],
     ['回收量超过体积', { ...good, items: [{ ...goodItem, reclaimable: 101 }] }],
     ['有回收量未标 cleanable', { ...good, items: [{ ...goodItem, cleanable: false }] }],
     ['分节前缀为空', { ...good, items: [{ ...goodItem, name: ' · a' }] }],
-    ['出错却有明细', { ...good, error: 'docker 未运行' }],
+    ['出错却有明细', { ...good, error: { t: 'r', v: 'docker 未运行' } }],
     ['detail 值不是字符串', { ...good, items: [{ ...goodItem, detail: { 清理方式: 42 } }] }],
     ['条目缺 name', { ...good, items: [{ ...goodItem, name: '' }] }],
     ['空指标键', { ...good, items: [{ ...goodItem, metrics: { '': { t: 'b', v: 1 } } }] }],
     ['顶层不是数组', { nope: true }],
+    // ---- P2a：展示文案从成品串换成 {t,v} 对象，形状坏了要在契约层就抓住 ----
+    ['分组名是成品字符串', { ...good, label: '测试分组' }],
+    ['分组名标签不认识', { ...good, label: { t: 'x', v: 'data.group.repos' } }],
+    ['分组名键为空', { ...good, label: { t: 'k', v: '' } }],
+    ['分组名为 null', { ...good, label: null }],
+    ['带参文案缺键', { ...good, summary: { t: 'f', v: { a: {} } } }],
+    ['带参文案参数表不是对象', { ...good, summary: { t: 'f', v: { k: 'data.summary.repos', a: [] } } }],
+    ['带参文案参数标签不认识', { ...good, summary: { t: 'f', v: { k: 'data.summary.repos', a: { count: { t: 'x', v: 1 } } } } }],
+    ['带参文案数字参数是字符串', { ...good, summary: { t: 'f', v: { k: 'data.summary.repos', a: { count: { t: 'n', v: '1' } } } } }],
+    ['带参文案字节参数为负', { ...good, summary: { t: 'f', v: { k: 'data.summary.repos', a: { total: { t: 'b', v: -1 } } } } }],
+    ['脚注是成品字符串', { ...good, notes: ['只读文件名'] }],
+    ['字段名不是文案对象', { ...good, fields: [{ key: 'size', label: '体积' }] }],
+    ['指标键标签值为空串', { ...good, items: [{ ...goodItem, metrics: { branch: { t: 'k', v: '' } } }] }],
+    ['标签不是对象', { ...good, items: [{ ...goodItem, tags: ['可清理'] }] }],
+    ['标签缺 key', { ...good, items: [{ ...goodItem, tags: [{ label: { t: 'r', v: '可清理' } }] }] }],
+    ['标签展示位不是文案对象', { ...good, items: [{ ...goodItem, tags: [{ key: 'cleanable', label: '可清理' }] }] }],
+    ['行的展示位不是文案对象', { ...good, items: [{ ...goodItem, short_label: 'Cargo 依赖缓存' }] }],
   ]
 
   const fullEntries = Array.from({ length: 14 }, (_, i) => ({
@@ -368,7 +478,7 @@ function selfTest() {
     }
   }
   // 软警告不挡通过：字段无对应指标只警告
-  const soft = validateSnapshot([{ ...good, fields: [{ key: 'ghost', label: '幽灵列' }] }])
+  const soft = validateSnapshot([{ ...good, fields: [{ key: 'ghost', label: { t: 'k', v: 'data.field.ghost' } }] }])
   console.log(soft.ok && soft.warnings.length === 1 ? '✓ 软警告只警告不挡通过' : '✗ 软警告行为不对')
   if (!(soft.ok && soft.warnings.length === 1)) failed++
 

@@ -53,6 +53,7 @@ S3 收窄 `cleanable` 口径的代价是**账面 toolchain 可回收从 31.27 GB
 
 - `GIT_*_DATE` 不吃 "400 days ago"（要绝对 Unix 时间戳；且判据读 `%ct` 提交者日期，只改 author date 不够）。
 - 只有 `branch.*.remote` 而没有 `[remote "origin"]` 段时 `@{u}` 解析失败（fatal: not stored as a remote-tracking branch），必须真 `git remote add`。
+- **`temp_dir()` 的目录名只拼 `process::id()` 不够**（P2a 2026-10-25 抓到）：`cargo test` 把全部测试跑在**同一进程的多个线程**里，同 tag 的两条测试拿到同一个目录，而 helper 开头就 `remove_dir_all`——一条在扫描，另一条把它的假 home 删了。症状是「`cargo test` 红、`cargo nextest` 绿」（nextest 每条测试独立进程，pid 天然不同），报的还是「白名单条目改名了？」这种误导文案。现在每次调用加一个进程内原子序号。加共用 fixture helper 时先想这一条。
 
 ## harness 接入初期抓到的问题
 

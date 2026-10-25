@@ -83,9 +83,10 @@
 //! `toolchain_source_never_reads_file_contents` 从源码层守着这条。
 
 use crate::scan::platform::Platform;
-use crate::scan::repos::{dir_sizes_batch, human_bytes, lookup_size, mtime_secs};
+use crate::scan::repos::{dir_sizes_batch, lookup_size, mtime_secs};
 use crate::scan::{
-    AssetGroup, CleanFailure, CleanPlan, CleanResult, Field, Item, MetricValue, Scanner,
+    AssetGroup, CleanFailure, CleanPlan, CleanResult, Field, Item, MetricValue, Scanner, Tag, Text,
+    TextArg, field_text, kind_text,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -276,6 +277,75 @@ fn cache_is_cleanable(src: &CacheSource) -> bool {
 
 /// 已安装产物的类别名。测试与汇总都按这个串判定「不可回收」。
 const KIND_INSTALLED: &str = "已安装";
+
+/// 分节标题的展示名。`section` 本身是筛选与 `group_key` 的稳定取值，
+/// 这里只决定怎么显示——品牌名（nvm / Rust / .NET…）不翻译。
+fn section_text(section: &str) -> Text {
+    match section {
+        "Node 生态" => Text::key("data.section.node"),
+        "AI 运行时" => Text::key("data.section.aiRuntime"),
+        "其它" => Text::key("data.section.other"),
+        "模拟器" => Text::key("data.section.simulators"),
+        _ => Text::raw(section),
+    }
+}
+
+/// 行名后半截（`section · short`）。品牌与产品名保持原样，中文描述走
+/// `data.item.*`；**新增白名单条目时在这里补一条**，漏了会回落成中文。
+fn short_text(short: &str) -> Text {
+    let key = match short {
+        "nvm 下载缓存" => "nvmDownloadCache",
+        "pnpm 内容存储" => "pnpmStore",
+        "pnpm 的 Node" => "pnpmNode",
+        "node-gyp 头文件" => "nodeGypHeaders",
+        "Playwright 浏览器" => "playwrightBrowsers",
+        "Puppeteer 浏览器" => "puppeteerBrowsers",
+        "Cypress 二进制" => "cypressBinary",
+        "Electron（XDG）" => "electronXdg",
+        "TypeScript 版本" => "typescriptVersions",
+        "Rustup 工具链" => "rustupToolchains",
+        "Rustup 下载缓存" => "rustupDownloads",
+        "Cargo 依赖缓存" => "cargoRegistry",
+        "Cargo Git 依赖" => "cargoGitDeps",
+        "Cargo 已装工具" => "cargoInstalledTools",
+        "模块缓存" => "goModuleCache",
+        "构建缓存" => "goBuildCache",
+        "已装工具" => "goInstalledTools",
+        "下载缓存" => "brewDownloads",
+        "vcpkg 二进制缓存" => "vcpkgBinaryCache",
+        "Prisma 引擎" => "prismaEngines",
+        "NuGet 全局包" => "nugetGlobalPackages",
+        "NuGet HTTP 缓存" => "nugetHttpCache",
+        "Coursier（旧版）" => "coursierLegacy",
+        "iOS 设备符号" => "iosDeviceSymbols",
+        "模拟器运行时" => "simulatorRuntimes",
+        _ => return Text::raw(short),
+    };
+    Text::key(format!("data.item.{key}"))
+}
+
+fn toolchain_fields() -> Vec<Field> {
+    vec![
+        Field {
+            key: "size".into(),
+            label: field_text("size"),
+            numeric: Some(true),
+            temporal: None,
+        },
+        Field {
+            key: "last_modified".into(),
+            label: field_text("lastModified"),
+            numeric: Some(true),
+            temporal: Some(true),
+        },
+        Field {
+            key: "kind".into(),
+            label: field_text("kind"),
+            numeric: None,
+            temporal: None,
+        },
+    ]
+}
 
 /// macOS 路径 → Windows 路径。
 ///
@@ -1066,7 +1136,7 @@ fn version_item(vm: &VersionManager, dir: &Path, size: u64, mtime: Option<i64>) 
         "last_modified".into(),
         match mtime {
             Some(ts) => MetricValue::Int(ts),
-            None => MetricValue::text("未知"),
+            None => MetricValue::key("data.value.unknown"),
         },
     );
     // kind 用既有分类串，前端「类别」维度与口径测试都认这一套
@@ -1084,9 +1154,13 @@ fn version_item(vm: &VersionManager, dir: &Path, size: u64, mtime: Option<i64>) 
         // 它是行名的一部分（`nvm · v22.19.0`），再挂一个标签就是同一信息显示两遍。
         tags: vec![],
         name: format!("{} · {}", vm.section, version),
+        label: None,
+        short_label: Some(Text::raw(version)),
+        group_label: Some(section_text(vm.section)),
         group_key: Some(vm.section.into()),
         path: dir.display().to_string(),
         metrics,
+        kind_label: Some(kind_text(KIND_INSTALLED)),
         detail: Some(detail),
         artifact_entries: vec![],
         cleanable: false,
@@ -1131,7 +1205,7 @@ fn child_item(src: &CacheSource, dir: &Path, size: u64, mtime: Option<i64>) -> I
         "last_modified".into(),
         match mtime {
             Some(ts) => MetricValue::Int(ts),
-            None => MetricValue::text("未知"),
+            None => MetricValue::key("data.value.unknown"),
         },
     );
     metrics.insert("kind".into(), MetricValue::text(src.kind));
@@ -1156,14 +1230,18 @@ fn child_item(src: &CacheSource, dir: &Path, size: u64, mtime: Option<i64>) -> I
     Item {
         id: format!("toolchain:{}", dir.display()),
         tags: if cleanable {
-            vec!["可清理".into()]
+            vec![Tag::new("cleanable")]
         } else {
             vec![]
         },
         name: format!("{} · {}", src.section, short),
+        label: None,
+        short_label: Some(Text::raw(short)),
+        group_label: Some(section_text(src.section)),
         group_key: Some(src.section.into()),
         path: dir.display().to_string(),
         metrics,
+        kind_label: Some(kind_text(src.kind)),
         detail: Some(detail),
         artifact_entries: vec![],
         cleanable,
@@ -1175,10 +1253,6 @@ impl Scanner for ToolchainScanner {
     fn id(&self) -> &'static str {
         "toolchain"
     }
-    fn label(&self) -> &'static str {
-        "工具链缓存"
-    }
-
     /// S3 起返回 `true`——`clean_cache` 已实现，17 条无官方命令的纯缓存有删除入口。
     ///
     /// **注意它不等于「本组所有 `cleanable` 的行都能删」**：有官方命令的那 6 条
@@ -1237,16 +1311,16 @@ impl Scanner for ToolchainScanner {
 
         let (count, total, cleanable_count, reclaimable) = summarize(&items);
 
-        let mut notes: Vec<String> = vec![
-            "只统计文件名与体积，不读取任何文件内容".into(),
+        let mut notes: Vec<Text> = vec![
+            Text::key("data.note.toolchain.noContent"),
             // 口径两条（分节标题「可回收」列的数按这个来，别写错）：
             // ① 纯下载/依赖缓存**且没有官方清理命令**的才可回收——本工具的「清理」
             //    按钮只对这类开放。② 有官方命令的（npm / pnpm / uv / pip / Homebrew /
             //    Go …）不算，命令写在每行明细里由你自己跑：搬走整个目录虽然安全，
             //    下次要完整重建，而官方命令只动真正多余的部分。
-            "可回收口径：没有官方清理命令的纯下载/依赖缓存，删除后按需重新下载或重建，功能无损；有官方清理命令的由你自己运行该命令（见每行「清理方式」），本工具不代跑、不计入可回收".into(),
-            "已安装的工具链与二进制不计入可回收，留哪个版本是主动选择".into(),
-            "清理命令以各工具官方命令为准；有进行中的构建或下载时建议等完成再清理".into(),
+            Text::key("data.note.toolchain.reclaimRule"),
+            Text::key("data.note.toolchain.installedNotReclaimable"),
+            Text::key("data.note.toolchain.waitBuilds"),
         ];
         // Xcode 系（P1）在场时才说：Archives 不是缓存这件事必须摆在明面上，
         // 别让人按「工具链缓存分组」的直觉把它当成可清理
@@ -1254,10 +1328,7 @@ impl Scanner for ToolchainScanner {
             .iter()
             .any(|(s, _)| s.section == "Xcode" || s.section == "模拟器")
         {
-            notes.push(
-                "Xcode 的 Archives 是打包归档不是缓存，永不计入可回收；模拟器运行时删了要重新下载（官方命令见明细）"
-                    .into(),
-            );
+            notes.push(Text::key("data.note.toolchain.xcodeArchives"));
         }
         // 版本管理器（nvm / fnm / volta / …）逐版本成行：多版本并存是主动选择，
         // 全部不可回收，卸掉要用各家自己的 uninstall 命令（见每行明细）。
@@ -1273,28 +1344,26 @@ impl Scanner for ToolchainScanner {
             v
         };
         if !managers.is_empty() {
-            notes.push(format!(
-                "版本管理器（{}）逐版本成行：多版本并存是主动选择，全部不可回收，卸掉用各家自己的 uninstall 命令",
-                managers.join(" / ")
-            ));
             notes.push(
-                "版本管理器不报「可回收」：本工具读不到哪个项目正在用哪个版本（要读各仓库的 .nvmrc / engines 字段并逐个求交集），报一个数会让人照着删掉还在用的版本".into(),
+                Text::fmt("data.note.toolchain.versionManagers")
+                    .arg("managers", Text::raw(managers.join(" / "))),
             );
+            notes.push(Text::key(
+                "data.note.toolchain.versionManagersNotReclaimable",
+            ));
         }
         if items.is_empty() {
-            notes.push("白名单内的缓存目录一个都不存在，可能未安装对应工具".into());
+            notes.push(Text::key("data.note.toolchain.empty"));
         }
 
         AssetGroup {
             id: self.id().into(),
-            label: self.label().into(),
-            summary: format!(
-                "{} 项 · 合计 {} · {} 项可回收 · 共 {}",
-                count,
-                human_bytes(total),
-                cleanable_count,
-                human_bytes(reclaimable)
-            ),
+            label: self.label(),
+            summary: Text::fmt("data.summary.toolchain")
+                .arg("count", TextArg::num(count))
+                .arg("total", TextArg::bytes(total))
+                .arg("clean", TextArg::num(cleanable_count))
+                .arg("reclaim", TextArg::bytes(reclaimable)),
             fields: toolchain_fields(),
             items,
             notes: Some(notes),
@@ -1311,7 +1380,7 @@ fn source_item(src: &CacheSource, path: &Path, size: u64, mtime: Option<i64>) ->
         "last_modified".into(),
         match mtime {
             Some(ts) => MetricValue::Int(ts),
-            None => MetricValue::text("未知"),
+            None => MetricValue::key("data.value.unknown"),
         },
     );
     metrics.insert("kind".into(), MetricValue::text(src.kind));
@@ -1341,14 +1410,18 @@ fn source_item(src: &CacheSource, path: &Path, size: u64, mtime: Option<i64>) ->
     Item {
         id: format!("toolchain:{}", path.display()),
         tags: if cleanable {
-            vec!["可清理".into()]
+            vec![Tag::new("cleanable")]
         } else {
             vec![]
         },
         name: format!("{} · {}", src.section, src.short),
+        label: None,
+        short_label: Some(short_text(src.short)),
+        group_label: Some(section_text(src.section)),
         group_key: Some(src.section.into()),
         path: path.display().to_string(),
         metrics,
+        kind_label: Some(kind_text(src.kind)),
         detail: Some(detail),
         artifact_entries: vec![],
         cleanable,
@@ -1368,30 +1441,6 @@ fn summarize(items: &[Item]) -> (usize, u64, usize, u64) {
     let reclaimable: u64 = items.iter().filter_map(|i| i.reclaimable).sum();
     let cleanable_count = items.iter().filter(|i| i.cleanable).count();
     (items.len(), total, cleanable_count, reclaimable)
-}
-
-/// 前端只渲染 `fields.slice(0, 3)`，这里正好三个。
-fn toolchain_fields() -> Vec<Field> {
-    vec![
-        Field {
-            key: "size".into(),
-            label: "体积".into(),
-            numeric: Some(true),
-            temporal: None,
-        },
-        Field {
-            key: "last_modified".into(),
-            label: "最后修改".into(),
-            numeric: Some(true),
-            temporal: Some(true),
-        },
-        Field {
-            key: "kind".into(),
-            label: "类别".into(),
-            numeric: None,
-            temporal: None,
-        },
-    ]
 }
 
 // ---- 测试辅助：把纯函数暴露给 tests.rs，避免重复实现 ----

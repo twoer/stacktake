@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
-import type { AssetGroup, Item } from "@/lib/types";
+import { beforeAll, describe, expect, it } from "vitest";
+import type { AssetGroup, Item, Tag } from "@/lib/types";
+import { applyLocale } from "@/lib/i18n";
 import {
   batchCleanRows,
   batchReclaimOf,
   canCleanArtifactsItem,
   canCleanItem,
+  cell,
   cleanKindOf,
   isBlockerTag,
   orderedTags,
@@ -17,6 +19,12 @@ import {
 // 给了按钮服务端拒（用户以为工具坏了），没给按钮（用户以为没有清理功能）。
 // vue-tsc 验不了判据逻辑本身，这里补的是 D16 登记时点名的那个缺口。
 
+// 类别列的读数随语言变，钉住起点——断言不该跟着跑测试的机器走。
+beforeAll(() => applyLocale("zh-CN"));
+
+/** 标签夹具：与后端 `Tag::new` 同形——key 是稳定取值，label 是文案键。 */
+const tg = (key: string): Tag => ({ key, label: { t: "k", v: `data.tag.${key}` } });
+
 const item = (over: Partial<Item> = {}): Item => ({
   id: "/tmp/repo-a",
   tags: [],
@@ -28,8 +36,8 @@ const item = (over: Partial<Item> = {}): Item => ({
 
 const group = (over: Partial<AssetGroup> = {}): AssetGroup => ({
   id: "repos",
-  label: "Git 仓库",
-  summary: "",
+  label: { t: "k", v: "data.group.repos" },
+  summary: { t: "r", v: "" },
   fields: [],
   items: [],
   ...over,
@@ -141,21 +149,48 @@ describe("cleanKindOf", () => {
 
 describe("orderedTags / isBlockerTag / tagHint", () => {
   it("阻断项排最前——标签段限宽被裁掉的必须是说明项，不能是预警", () => {
-    expect(orderedTags(["陈旧", "未推送", "大"])).toEqual(["未推送", "陈旧", "大"]);
-    expect(orderedTags(["有改动", "有 stash", "可清理"])).toEqual(["有改动", "有 stash", "可清理"]);
+    expect(orderedTags([tg("stale"), tg("unpushed"), tg("large")])).toEqual([
+      tg("unpushed"),
+      tg("stale"),
+      tg("large"),
+    ]);
+    expect(orderedTags([tg("modified"), tg("stashed"), tg("cleanable")])).toEqual([
+      tg("modified"),
+      tg("stashed"),
+      tg("cleanable"),
+    ]);
     expect(orderedTags([])).toEqual([]);
   });
 
   it("阻断名单与 fail-closed 三态对齐", () => {
-    expect(isBlockerTag("未推送")).toBe(true);
-    expect(isBlockerTag("有改动")).toBe(true);
-    expect(isBlockerTag("有 stash")).toBe(true);
-    expect(isBlockerTag("大")).toBe(false);
-    expect(isBlockerTag("嵌套")).toBe(false);
+    expect(isBlockerTag(tg("unpushed"))).toBe(true);
+    expect(isBlockerTag(tg("modified"))).toBe(true);
+    expect(isBlockerTag(tg("stashed"))).toBe(true);
+    expect(isBlockerTag(tg("large"))).toBe(false);
+    expect(isBlockerTag(tg("nested"))).toBe(false);
   });
 
   it("认不出的标签不给提示（Hint 没文案就不挂实例）", () => {
-    expect(tagHint("大")).toMatch(/200 MB/);
-    expect(tagHint("自定义")).toBeUndefined();
+    expect(tagHint(tg("large"))).toMatch(/200 MB/);
+    expect(tagHint({ key: "自定义", label: { t: "r", v: "自定义" } })).toBeUndefined();
+  });
+});
+
+describe("cell —— 列读数", () => {
+  const kindRow = (over: Partial<Item> = {}): Item =>
+    item({ metrics: { kind: { t: "s", v: "下载缓存" } }, ...over });
+
+  it("类别列走 kind_label 的展示名，不印筛选词表", () => {
+    applyLocale("en");
+    expect(cell(kindRow({ kind_label: { t: "k", v: "data.kind.downloadCache" } }), "kind")).toBe(
+      "Download cache",
+    );
+    applyLocale("zh-CN");
+    expect(cell(kindRow({ kind_label: { t: "k", v: "data.kind.downloadCache" } }), "kind")).toBe("下载缓存");
+  });
+
+  it("老缓存没有 kind_label 时退回原值，缺指标仍是破折号", () => {
+    expect(cell(kindRow(), "kind")).toBe("下载缓存");
+    expect(cell(item(), "kind")).toBe("—");
   });
 });

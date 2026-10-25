@@ -4,7 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "vue-sonner";
 import { autoScanDue } from "@/lib/autoScan";
-import type { AssetGroup, BootPayload, ScanProgress, ScanResult } from "@/lib/types";
+import { t } from "@/lib/i18n";
+import type { AssetGroup, BootPayload, ScanProgress, ScanResult, Text } from "@/lib/types";
 import { useAutoScan } from "@/composables/useAutoScan";
 
 /**
@@ -33,9 +34,13 @@ const progress = ref<ScanProgress | null>(null);
 /**
  * 本次扫描已完成的分组名（到达序，扫描器并行所以不固定）。事件是瞬时的，
  * 「哪些组扫完了」要靠这里累计；首扫空态的行账拿它点亮对应的行。
+ *
+ * 存的是后端的 `Text` 而不是成品串：点亮判据要跨两次事件比较同一个分组，而
+ * 成品串取决于事件到达时的界面语言。渲染时再 `renderText`，比较用 JSON 形态
+ * （同一分组两次下发的是不同对象，不能按引用比）。
  * 与 progress 同生共死：扫描开始清空，结束一并归 null。
  */
-const scanDoneLabels = ref<string[]>([]);
+const scanDoneLabels = ref<Text[]>([]);
 
 /**
  * 时间针：每分钟跳一次的「现在」（秒，与缓存时间戳同单位）。formatAgo、
@@ -53,10 +58,20 @@ window.setInterval(() => {
 // 开扫那一刻的 done: 0。非 Tauri 环境（浏览器里跑）invoke 会拒，吞掉即可。
 void listen<ScanProgress>("scan-progress", (e) => {
   progress.value = e.payload;
-  if (e.payload.label && !scanDoneLabels.value.includes(e.payload.label)) {
-    scanDoneLabels.value.push(e.payload.label);
+  const label = e.payload.label;
+  if (label && !scanDoneLabels.value.some((done) => textIdentity(done) === textIdentity(label))) {
+    scanDoneLabels.value.push(label);
   }
 }).catch(() => {});
+
+/**
+ * 同一个分组的两次事件比的是**文案身份**，不是对象引用（每次事件都是新解析的
+ * 对象），也不是成品串（那取决于事件到达时的界面语言）。`Text` 的 JSON 形态
+ * 由键与参数决定，正好是这个身份。
+ */
+function textIdentity(text: Text): string {
+  return JSON.stringify(text);
+}
 
 /** 所有返回完整快照的命令都更新这同一份数据与分组时间。 */
 function applySnapshot(next: ScanResult) {
@@ -120,14 +135,14 @@ export function useAssets() {
   async function autoScanAfterBoot() {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     if (loading.value) return; // 用户已经发起扫描了，别叠第二次
-    toast.info("缓存已超过 24 小时，正在自动重扫");
+    toast.info(t("assets.autoScanToast"));
     const r = await rescan();
-    if (!r.ok) toast.error(`自动重扫失败：${r.message}`);
+    if (!r.ok) toast.error(t("assets.autoScanFailed", { message: r.message }));
   }
 
   /** 手动重扫：等扫完再返回。成败交回调用方去 toast，这里不碰 UI。 */
   async function rescan(): Promise<{ ok: true } | { ok: false; message: string }> {
-    if (loading.value) return { ok: false, message: "正在扫描或更新目录，请稍后再试" };
+    if (loading.value) return { ok: false, message: t("assets.busy") };
     loading.value = true;
     progress.value = null;
     scanDoneLabels.value = [];
@@ -153,7 +168,7 @@ export function useAssets() {
   async function rescanGroup(
     groupId: string,
   ): Promise<{ ok: true } | { ok: false; message: string }> {
-    if (loading.value) return { ok: false, message: "正在扫描或更新目录，请稍后再试" };
+    if (loading.value) return { ok: false, message: t("assets.busy") };
     loading.value = true;
     progress.value = null;
     scanDoneLabels.value = [];

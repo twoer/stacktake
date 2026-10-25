@@ -13,7 +13,7 @@
 //! 顺带解决一个实际痛点：`~/.ssh` 里同一台机器常有两份 key（`ip_ed25519` 和 `ip_id_ed25519`），
 //! 以及新建的 key 忘了加进 config。这些会被标成「未被引用」和「疑似重复」。
 
-use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner};
+use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner, Tag, Text, field_text};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -36,19 +36,15 @@ impl Scanner for SshScanner {
         "ssh"
     }
 
-    fn label(&self) -> &'static str {
-        "SSH 密钥"
-    }
-
     fn scan(&self) -> AssetGroup {
         if !self.ssh_dir.exists() {
             return AssetGroup {
                 id: self.id().into(),
-                label: self.label().into(),
-                summary: "未找到 .ssh 目录".into(),
+                label: self.label(),
+                summary: Text::key("data.summary.sshMissingDir"),
                 fields: ssh_fields(),
                 items: vec![],
-                error: Some(self.ssh_dir.display().to_string()),
+                error: Some(Text::raw(self.ssh_dir.display().to_string())),
                 supports_clean: false,
                 notes: None,
             };
@@ -62,11 +58,11 @@ impl Scanner for SshScanner {
             Err(e) => {
                 return AssetGroup {
                     id: self.id().into(),
-                    label: self.label().into(),
-                    summary: "读取失败".into(),
+                    label: self.label(),
+                    summary: Text::key("data.summary.sshReadFailed"),
                     fields: ssh_fields(),
                     items: vec![],
-                    error: Some(e.to_string()),
+                    error: Some(Text::raw(e.to_string())),
                     supports_clean: false,
                     notes: None,
                 };
@@ -141,7 +137,7 @@ impl Scanner for SshScanner {
                     && let Some((_, group)) = dupes.iter().find(|(f, _)| *f == fp)
                     && group.len() > 1
                 {
-                    it.tags.push(format!("重复×{}", group.len()));
+                    it.tags.push(Tag::raw(format!("重复×{}", group.len())));
                     if let Some(d) = it.detail.as_mut() {
                         d.insert("重复于".into(), group.join(", "));
                     }
@@ -150,28 +146,35 @@ impl Scanner for SshScanner {
             })
             .collect();
 
-        let mut notes: Vec<String> = Vec::new();
+        let mut notes: Vec<Text> = Vec::new();
         for (fp, group) in &dupes {
-            notes.push(format!(
+            notes.push(Text::raw(format!(
                 "{} 有 {} 份副本：{}",
                 &fp[..fp.len().min(20)],
                 group.len(),
                 group.join(", ")
-            ));
+            )));
         }
         let orphans = items
             .iter()
-            .filter(|i| i.tags.iter().any(|t| t == "未引用"))
+            .filter(|i| i.tags.iter().any(|t| t.key == "未引用"))
             .count();
         if orphans > 0 {
-            notes.push(format!("{} 把密钥未被 ~/.ssh/config 引用", orphans));
+            notes.push(Text::raw(format!(
+                "{} 把密钥未被 ~/.ssh/config 引用",
+                orphans
+            )));
         }
 
-        let summary = format!("{} 把私钥 · {} 把未被 config 引用", items.len(), orphans);
+        let summary = Text::raw(format!(
+            "{} 把私钥 · {} 把未被 config 引用",
+            items.len(),
+            orphans
+        ));
 
         AssetGroup {
             id: self.id().into(),
-            label: self.label().into(),
+            label: self.label(),
             summary,
             fields: ssh_fields(),
             items,
@@ -186,19 +189,19 @@ fn ssh_fields() -> Vec<Field> {
     vec![
         Field {
             key: "type".into(),
-            label: "类型".into(),
+            label: field_text("type"),
             numeric: None,
             temporal: None,
         },
         Field {
             key: "created".into(),
-            label: "创建于".into(),
+            label: field_text("created"),
             numeric: Some(true),
             temporal: Some(true),
         },
         Field {
             key: "usage".into(),
-            label: "用途".into(),
+            label: field_text("usage"),
             numeric: None,
             temporal: None,
         },
@@ -312,26 +315,26 @@ fn build_item(
     referenced_by: Vec<String>,
     has_pub: bool,
 ) -> Item {
-    let mut tags: Vec<String> = Vec::new();
+    let mut tags: Vec<Tag> = Vec::new();
     if !referenced_by.is_empty() {
-        tags.push("已引用".into());
+        tags.push(Tag::new("referenced"));
     } else {
-        tags.push("未引用".into());
+        tags.push(Tag::new("unreferenced"));
     }
     if meta.encrypted {
-        tags.push("加密".into());
+        tags.push(Tag::new("encrypted"));
     } else {
-        tags.push("无密码".into());
+        tags.push(Tag::new("noPassphrase"));
     }
     if !has_pub {
-        tags.push("缺.pub".into());
+        tags.push(Tag::new("missingPub"));
     }
     // 权限过宽是安全隐患（权限位是 unix 语义，Windows 上没有）
     #[cfg(unix)]
     if let Some(p) = meta.perms
         && p & 0o077 != 0
     {
-        tags.push(format!("权限{:o}", p));
+        tags.push(Tag::raw(format!("权限{:o}", p)));
     }
 
     let usage = if referenced_by.is_empty() {
@@ -354,7 +357,7 @@ fn build_item(
             .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
         {
             Some(d) => MetricValue::Int(d.as_secs() as i64),
-            None => MetricValue::text("未知"),
+            None => MetricValue::key("data.value.unknown"),
         },
     );
     metrics.insert("usage".into(), MetricValue::text(usage));
@@ -384,6 +387,10 @@ fn build_item(
         id: path.display().to_string(),
         tags,
         name,
+        label: None,
+        short_label: None,
+        group_label: None,
+        kind_label: None,
         group_key: None,
         path: path.display().to_string(),
         metrics,
