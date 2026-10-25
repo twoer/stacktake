@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "Stacktake"
-version = "0.1.8"
+version = "1.0.0"
 dependencies = [
  "dirs 5.0.1",
  "dunce",
