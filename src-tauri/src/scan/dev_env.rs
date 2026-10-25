@@ -18,7 +18,8 @@
 use crate::scan::platform::{Platform, first_existing};
 use crate::scan::repos::{dir_size_fast, dir_sizes_batch, lookup_size, mtime_secs};
 use crate::scan::{
-    AssetGroup, Field, Item, MetricValue, Scanner, Tag, Text, TextArg, field_text, kind_text,
+    AssetGroup, DetailRow, Field, Item, MetricValue, Scanner, Tag, Text, TextArg, field_text,
+    kind_text,
 };
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -39,13 +40,6 @@ fn count_subdirs(p: &Path) -> usize {
                 .count()
         })
         .unwrap_or(0)
-}
-
-fn detail(pairs: &[(&str, String)]) -> HashMap<String, String> {
-    pairs
-        .iter()
-        .map(|(k, v)| ((*k).to_string(), v.clone()))
-        .collect()
 }
 
 // ============================================================================
@@ -181,10 +175,13 @@ fn maven_items(root: &Path) -> Vec<Item> {
                 metrics,
                 kind_label: Some(kind_text("依赖缓存")),
                 artifact_entries: vec![],
-                detail: Some(detail(&[
-                    ("0. 路径", r.path.display().to_string()),
-                    ("1. 构件组", r.artifacts.to_string()),
-                ])),
+                detail: vec![
+                    DetailRow::new("path", r.path.display().to_string()),
+                    DetailRow::new(
+                        "artifactGroups",
+                        Text::fmt("data.value.count").arg("n", TextArg::num(r.artifacts)),
+                    ),
+                ],
                 cleanable: false,
                 reclaimable: None,
             }
@@ -219,10 +216,13 @@ fn maven_items(root: &Path) -> Vec<Item> {
             metrics,
             kind_label: Some(kind_text("依赖缓存")),
             artifact_entries: vec![],
-            detail: Some(detail(&[
-                ("0. 路径", root.display().to_string()),
-                ("1. 说明", format!("体积未进前 {} 的 groupId", MAVEN_TOP)),
-            ])),
+            detail: vec![
+                DetailRow::new("path", root.display().to_string()),
+                DetailRow::new(
+                    "note",
+                    Text::fmt("data.value.mavenRest").arg("top", TextArg::num(MAVEN_TOP)),
+                ),
+            ],
             cleanable: false,
             reclaimable: None,
         });
@@ -328,17 +328,17 @@ fn gradle_items(home: &Path) -> Vec<Item> {
                     metrics,
                     kind_label: Some(kind_text("分发版")),
                     artifact_entries: vec![],
-                    detail: Some(detail(&[
-                        ("0. 路径", p.display().to_string()),
-                        (
-                            "1. 说明",
-                            if keep {
-                                "版本最高，判为在用的那个，不计入可回收".into()
+                    detail: vec![
+                        DetailRow::new("path", p.display().to_string()),
+                        DetailRow::new(
+                            "note",
+                            Text::key(if keep {
+                                "data.value.gradleDistKeep"
                             } else {
-                                "有更新的分发版存在，旧的可安全移除".into()
-                            },
+                                "data.value.gradleDistOld"
+                            }),
                         ),
-                    ])),
+                    ],
                     cleanable: !keep,
                     reclaimable: if keep { None } else { Some(size) },
                 });
@@ -387,17 +387,17 @@ fn gradle_items(home: &Path) -> Vec<Item> {
             metrics,
             kind_label: Some(kind_text(kind)),
             artifact_entries: vec![],
-            detail: Some(detail(&[
-                ("0. 路径", p.display().to_string()),
-                (
-                    "1. 说明",
-                    if cleanable {
-                        "Gradle 守护进程的运行日志，删掉不影响构建".into()
+            detail: vec![
+                DetailRow::new("path", p.display().to_string()),
+                DetailRow::new(
+                    "note",
+                    Text::key(if cleanable {
+                        "data.value.gradleDaemonLogs"
                     } else {
-                        "删了下次构建会重新生成或重新下载".into()
-                    },
+                        "data.value.gradleRegenerates"
+                    }),
                 ),
-            ])),
+            ],
             cleanable,
             reclaimable: if cleanable { Some(size) } else { None },
         });
@@ -482,10 +482,10 @@ fn jdk_items() -> Vec<Item> {
                 metrics,
                 kind_label: Some(kind_text("已安装")),
                 artifact_entries: vec![],
-                detail: Some(detail(&[
-                    ("0. 路径", p.display().to_string()),
-                    ("1. 目录", dir_name),
-                ])),
+                detail: vec![
+                    DetailRow::new("path", p.display().to_string()),
+                    DetailRow::new("dir", dir_name),
+                ],
                 cleanable: false,
                 reclaimable: None,
             }
@@ -967,7 +967,7 @@ impl Scanner for DevEnvScanner {
                     path: path.display().to_string(),
                     metrics,
                     artifact_entries: vec![],
-                    detail: Some(detail(&[("0. 路径", path.display().to_string())])),
+                    detail: vec![DetailRow::new("path", path.display().to_string())],
                     cleanable: p.cleanable,
                     reclaimable: if p.cleanable { Some(size) } else { None },
                 }

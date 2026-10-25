@@ -33,13 +33,15 @@ mod harness {
     };
     use crate::scan::toolchain::{
         ToolchainScanner, all_rels_for_test, clean_verdict_for_test, cleanable_and_cmd_for_test,
-        kinds_for_test, parse_cache_id_for_test, resolve_rel_for_test, sources_on_for_test,
-        summarize_for_test, version_items_for_test, version_managers_for_test,
+        kinds_for_test, note_keys_for_test, parse_cache_id_for_test, resolve_rel_for_test,
+        sources_on_for_test, summarize_for_test, version_items_for_test, version_managers_for_test,
     };
     use crate::scan::wsl::{
         WslDistro, WslScanner, parse_lxss_registry_for_test, wsl_scanners_with,
     };
-    use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner, Tag, Text, TextArg};
+    use crate::scan::{
+        AssetGroup, DetailRow, Field, Item, MetricValue, Scanner, Tag, Text, TextArg, detail_text,
+    };
     use crate::scan::{CleanPlan, CleanScope, OVERVIEW_ID, synthesize_overview};
     use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
@@ -61,6 +63,31 @@ mod harness {
             Text::Raw(s) | Text::Key(s) => !s.is_empty(),
             Text::Fmt(f) => !f.k.is_empty(),
         }
+    }
+
+    /// Raw 文案的裸字串（路径 / 命令 / 标识这类语言无关的值）。
+    fn text_raw(t: &Text) -> Option<&str> {
+        match t {
+            Text::Raw(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// `Fmt` 文案的某个参数。
+    fn text_arg<'a>(t: &'a Text, name: &str) -> Option<&'a TextArg> {
+        match t {
+            Text::Fmt(f) => f.a.get(name),
+            _ => None,
+        }
+    }
+
+    /// 明细行按标签键取值（标签统一是 `data.detail.<key>`）。
+    fn detail_value<'a>(it: &'a Item, key: &str) -> Option<&'a Text> {
+        let label = detail_text(key);
+        it.detail
+            .iter()
+            .find(|r| r.label == label)
+            .map(|r| &r.value)
     }
 
     #[test]
@@ -88,9 +115,8 @@ mod harness {
         if !g.items.is_empty() {
             let has_fp = g.items.iter().any(|i| {
                 i.detail
-                    .as_ref()
-                    .map(|d| d.values().any(|v| v.starts_with("SHA256:")))
-                    .unwrap_or(false)
+                    .iter()
+                    .any(|r| text_raw(&r.value).is_some_and(|v| v.starts_with("SHA256:")))
             });
             assert!(has_fp, "没有任何条目带 SHA256 指纹");
         }
@@ -809,10 +835,7 @@ Host gamma
                     ("last_commit".into(), MetricValue::Int(1_700_000_000)),
                     ("branch".into(), MetricValue::Text("main".into())),
                 ]),
-                detail: Some(HashMap::from([(
-                    "远端".into(),
-                    "git@github.com:x/y.git".into(),
-                )])),
+                detail: vec![DetailRow::new("remote", "git@github.com:x/y.git")],
                 cleanable: true,
                 artifact_entries: vec![],
                 reclaimable: Some(1_000_000_000),
@@ -859,8 +882,8 @@ Host gamma
         );
         assert_eq!(item.tags, vec![Tag::new("large"), Tag::new("stale")]);
         assert_eq!(
-            item.detail.as_ref().unwrap().get("远端").unwrap(),
-            "git@github.com:x/y.git"
+            detail_value(item, "remote").and_then(text_raw),
+            Some("git@github.com:x/y.git")
         );
         assert!(item.cleanable);
         assert_eq!(item.reclaimable, Some(1_000_000_000));
@@ -907,10 +930,10 @@ Host gamma
         let p = cache::cache_path(&dir);
         let mut old: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
-        // 17 仍是截断文本契约，不能用默认空数组冒充完整产物列表。
+        // 17 仍是截断文本契约（detail 还是字串映射），不能用默认空数组冒充完整产物列表。
         old["groups"][0]["items"][0]["metrics"]["artifacts"] =
             serde_json::json!({"t": "b", "v": 4096});
-        old["groups"][0]["items"][0]["detail"]["产物明细"] = "target · 4 KB".into();
+        old["groups"][0]["items"][0]["detail"] = serde_json::json!({"产物明细": "target · 4 KB"});
         for schema in [0, 17] {
             old["schema"] = schema.into();
             std::fs::write(&p, serde_json::to_string(&old).unwrap()).unwrap();
@@ -1500,7 +1523,10 @@ Host gamma
                 assert_eq!(result.failed.len(), ids.len());
                 for (failure, id) in result.failed.iter().zip(&ids) {
                     assert_eq!(&failure.id, id);
-                    assert_eq!(failure.reason, "该工具目录仅统计，不开放清理");
+                    assert_eq!(
+                        text_key(&failure.reason),
+                        Some("data.cleanFail.readOnlyRoot")
+                    );
                 }
                 for name in ["logs", "sessions", "cache"] {
                     assert!(root.join(name).is_dir());
@@ -1541,7 +1567,10 @@ Host gamma
                     artifact_targets: None,
                 });
                 assert_eq!(result.failed.len(), 1);
-                assert_eq!(result.failed[0].reason, "不在 AI 工具扫描白名单内");
+                assert_eq!(
+                    text_key(&result.failed[0].reason),
+                    Some("data.cleanFail.notInAiWhitelist")
+                );
             }
         }
         std::fs::remove_dir_all(home).unwrap();
@@ -1880,26 +1909,38 @@ Host gamma
         std::fs::create_dir_all(foreign_root.join("logs")).unwrap();
 
         let cases: Vec<(Vec<String>, bool, &str)> = vec![
-            (vec![ai_id(&tool_root, Category::Log)], false, "未确认"),
-            (vec!["".into()], true, "条目 id 不合法"),
-            (vec!["toolchain:/x".into()], true, "条目 id 不合法"),
+            (
+                vec![ai_id(&tool_root, Category::Log)],
+                false,
+                "data.cleanFail.unconfirmed",
+            ),
+            (vec!["".into()], true, "data.cleanFail.invalidId"),
+            (
+                vec!["toolchain:/x".into()],
+                true,
+                "data.cleanFail.invalidId",
+            ),
             // 解析合法但根不在本次白名单内（绝对路径，跨平台可构造）
             (
                 vec![ai_id(&foreign_root, Category::Log)],
                 true,
-                "不在 AI 工具扫描白名单内",
+                "data.cleanFail.notInAiWhitelist",
             ),
             // 相对路径先被拒（不依赖白名单）
-            (vec!["ai:log:relative/logs".into()], true, "不是绝对路径"),
+            (
+                vec!["ai:log:relative/logs".into()],
+                true,
+                "data.cleanFail.notAbsolute",
+            ),
             (
                 vec![ai_id(&tool_root, Category::Config)],
                 true,
-                "配置 类别不开放清理",
+                "data.cleanFail.categoryLocked",
             ),
             (
                 vec![ai_id(&tool_root, Category::Cache)],
                 true,
-                "没有可清理的缓存条目，重扫一次",
+                "data.cleanFail.noCleanableEntries",
             ),
         ];
 
@@ -1912,7 +1953,7 @@ Host gamma
             );
             assert_eq!(r.freed_bytes, 0, "拒绝路径不该计腾出空间");
             assert!(
-                r.failed.iter().any(|f| f.reason == want),
+                r.failed.iter().any(|f| text_key(&f.reason) == Some(want)),
                 "期望拒绝原因 {:?}，实际 {:?}",
                 want,
                 r.failed
@@ -3009,13 +3050,14 @@ CACHE ID   CACHE TYPE   SIZE      CREATED   LAST USED   USAGE     SHARED
             !rt_row.cleanable && rt_row.reclaimable.is_none(),
             "有官方命令的不标可清理（S3 口径）"
         );
-        let detail = rt_row.detail.as_ref().unwrap();
+        let clean_how = detail_value(rt_row, "cleanHow").expect("行明细要有「清理方式」");
         assert!(
-            detail
-                .values()
-                .any(|v| v.contains("xcrun simctl runtime delete")),
+            matches!(
+                text_arg(clean_how, "cmd"),
+                Some(TextArg::Raw(cmd)) if cmd.contains("xcrun simctl runtime delete")
+            ),
             "行明细要指到官方命令：{:?}",
-            detail
+            clean_how
         );
     }
 
@@ -3038,7 +3080,11 @@ CACHE ID   CACHE TYPE   SIZE      CREATED   LAST USED   USAGE     SHARED
         );
         // 整目录命中可列出源 → 拒：账面只列子行，整目录入口比账面删得更多
         let err = clean_verdict_for_test(&home, p, &dd).unwrap_err();
-        assert!(err.contains("逐项"), "整目录删除要被拒，实际：{}", err);
+        assert!(
+            text_key(&err) == Some("data.cleanFail.perChildOnly"),
+            "整目录删除要被拒，实际：{:?}",
+            err
+        );
         // 子目录命中不可列出源 → 拒（pnpm store 的孩子不在任何账面上）
         assert!(
             clean_verdict_for_test(&home, p, &store.join("v3")).is_err(),
@@ -3051,7 +3097,11 @@ CACHE ID   CACHE TYPE   SIZE      CREATED   LAST USED   USAGE     SHARED
         );
         // 精确命中已安装产物 → 拒，理由带类别
         let err = clean_verdict_for_test(&home, p, &home.join("Library/pnpm/nodejs")).unwrap_err();
-        assert!(err.contains("不提供清理入口"), "实际：{}", err);
+        assert!(
+            text_key(&err) == Some("data.cleanFail.noCleanEntry"),
+            "实际：{:?}",
+            err
+        );
         // 陌生人 → 拒
         assert!(clean_verdict_for_test(&home, p, &home.join("somewhere/else")).is_err());
     }
@@ -3831,11 +3881,9 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             state.display().to_string(),
             "path 该给发行版目录（vhdx 就在里面）"
         );
-        assert!(
-            ubuntu
-                .detail
-                .as_ref()
-                .is_some_and(|d| d.values().any(|v| v.contains("fstrim"))),
+        assert_eq!(
+            detail_value(ubuntu, "howToShrink").and_then(text_key),
+            Some("data.value.vhdxHowToShrink"),
             "detail 里该给出压缩步骤"
         );
 
@@ -3971,14 +4019,12 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                         assert!(r <= *b, "{} 回收量 {} 超过体积 {}", it.id, r, b);
                     }
                 }
-                if let Some(d) = &it.detail {
-                    for (k, v) in d {
-                        assert!(
-                            !k.is_empty() && !v.is_empty(),
-                            "{} 的 detail 有空键值",
-                            it.id
-                        );
-                    }
+                for r in &it.detail {
+                    assert!(
+                        text_present(&r.label) && text_present(&r.value),
+                        "{} 的 detail 有空标签或空值",
+                        it.id
+                    );
                 }
             }
         }
@@ -4117,8 +4163,8 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
     }
 
     /// 遍历一个分组里**所有给人看的文案位**（分组名 / 摘要 / 错误 / 字段名 / 脚注 /
-    /// 行标签 / 行的四个展示字段）。两条国际化门禁共用这张表——漏一个展示位，
-    /// 那条门禁就等于没立。
+    /// 行标签 / 行的四个展示字段 / 明细行的标签与值 / 指标格里的文案）。两条国际化
+    /// 门禁共用这张表——漏一个展示位，那条门禁就等于没立。
     fn each_display_text(groups: &[AssetGroup], f: &mut impl FnMut(&str, &Text)) {
         for g in groups {
             f(&format!("{} 分组名", g.id), &g.label);
@@ -4146,6 +4192,24 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                         f(&format!("{} 行的 {slot}", g.id), t);
                     }
                 }
+                // P2b 起明细行两边都是 Text：标签必是键，值可以是路径这类 Raw
+                for r in &it.detail {
+                    f(&format!("{} 明细标签", g.id), &r.label);
+                    f(&format!("{} 明细值", g.id), &r.value);
+                }
+                // 指标格里的文案形态（`t:"k"` / `t:"f"`）：前端 `formatMetric` 同样查表，
+                // 漏一条就是单元格里印着键名。`Text(String)` 是数据（分支名、`—`），不算。
+                for (key, m) in &it.metrics {
+                    match m {
+                        MetricValue::TextKey(k) => {
+                            f(&format!("{} 指标 {key}", g.id), &Text::Key(k.clone()));
+                        }
+                        MetricValue::TextFmt(fm) => {
+                            f(&format!("{} 指标 {key}", g.id), &Text::Fmt(fm.clone()));
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
     }
@@ -4159,9 +4223,10 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
     /// 是「**展示位下发的是键还是成品**」。
     ///
     /// 覆盖的展示位：分组 `label` / `summary` / `notes` / `error`、字段名、行标签，
-    /// 以及行的 `label` / `short_label` / `group_label` / `kind_label`。
-    /// **不覆盖**（刻意留在 P2b）：`Item.detail` 的正文、`Item.name`、`metrics.kind`
-    /// 的原始值——后两者是搜索 / 筛选 / 分节的词表，语言无关才正确。
+    /// 行的 `label` / `short_label` / `group_label` / `kind_label`，以及（P2b 起）
+    /// 明细行的标签与值、指标格里的 `k` / `f` 文案。
+    /// **不覆盖**：`Item.name`、`group_key`、`metrics.kind` 的原始值——它们是搜索 /
+    /// 筛选 / 分节的词表，语言无关才正确。
     #[test]
     fn displayed_text_is_a_key_not_finished_chinese() {
         let (roots, groups, seeded_rows) = display_smoke_groups();
@@ -4229,17 +4294,129 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let (roots, groups, _) = display_smoke_groups();
         let mut keys: Vec<String> = vec![];
         each_display_text(&groups, &mut |_, t| collect_text_keys(t, &mut keys));
-        // 指标里的 `t:"k"`（`data.value.unknown` 这类）也是展示位：前端
-        // `formatMetric` 同样查表，漏一条就是单元格里印着键名。
-        for g in &groups {
-            for it in &g.items {
-                for m in it.metrics.values() {
-                    if let MetricValue::TextKey(k) = m {
-                        keys.push(k.clone());
-                    }
-                }
-            }
+        // 白名单 `note` 列的全部键按表遍历：空 home 冒烟只逼得出七八条，剩下的
+        // 三十多条不在这里补上，新增条目漏译文就没人管。
+        for t in note_keys_for_test() {
+            collect_text_keys(&t, &mut keys);
         }
+        // 冒烟扫描到不了的下发路径：清理被拒的原因（只在 `clean_*` 里出现）、
+        // 未注册但留树的 docker / ssh 的组级文案、以及要有特定数据才走到的分支
+        // （仓库有未推送 / 模型缺层 / LM Studio 暂存目录 / WSL 注册表值异常…）。
+        // 这些键在代码里是字面量，没有表可遍历，只能登记在这里；新增一条下发
+        // 路径时顺手加一行——漏登记的后果仍是「界面上印键名」，不是误报。
+        const KEYS_OFF_THE_SMOKE_PATH: &[&str] = &[
+            // 清理拒绝原因（repos / toolchain / ai_tools 三套实现）
+            "data.cleanFail.unconfirmed",
+            "data.cleanFail.unpushed",
+            "data.cleanFail.pushUnknown",
+            "data.cleanFail.stash",
+            "data.cleanFail.dirtyFiles",
+            "data.cleanFail.notAbsolute",
+            "data.cleanFail.repoMissing",
+            "data.cleanFail.notGitRepo",
+            "data.cleanFail.artifactOutsideRepo",
+            "data.cleanFail.noArtifacts",
+            "data.cleanFail.artifactRecheckFailed",
+            "data.cleanFail.invalidId",
+            "data.cleanFail.notInCacheWhitelist",
+            "data.cleanFail.noCleanEntry",
+            "data.cleanFail.officialCommand",
+            "data.cleanFail.perChildOnly",
+            "data.cleanFail.notInAiWhitelist",
+            "data.cleanFail.readOnlyRoot",
+            "data.cleanFail.categoryLocked",
+            "data.cleanFail.noCleanableEntries",
+            "data.cleanFail.symlinkSkipped",
+            "data.cleanFail.pathMissingSkipped",
+            // repos：状态指标与明细里随数据出现的分支
+            "data.value.pushUnknown",
+            "data.value.dirtyFiles",
+            "data.value.clean",
+            "data.value.none",
+            "data.value.bytes",
+            "data.value.artifactSummary",
+            "data.detail.remote",
+            "data.detail.lastCommit",
+            "data.detail.gitSize",
+            "data.detail.artifacts",
+            // toolchain：三档清理方式与类别组合（冒烟只逼出其中一两档）
+            "data.value.kindOfSource",
+            "data.value.cleanByTrash",
+            "data.value.cleanByCommand",
+            "data.value.notCleanable",
+            "data.detail.manager",
+            "data.detail.cleanHow",
+            // ai_tools
+            "data.detail.entries",
+            "data.detail.clean",
+            "data.value.statsOnly",
+            "data.value.count",
+            // local_models
+            "data.detail.weightLayers",
+            "data.detail.missingLayers",
+            "data.detail.sharedLayers",
+            "data.detail.publisher",
+            "data.detail.status",
+            "data.detail.weights",
+            "data.detail.org",
+            "data.value.layerCount",
+            "data.value.missingLayers",
+            "data.value.sharedLayers",
+            "data.value.downloadStaging",
+            "data.value.weightsNotOnDisk",
+            // dev_env（java / 移动端）
+            "data.detail.artifactGroups",
+            "data.detail.dir",
+            "data.value.mavenRest",
+            "data.value.gradleDistKeep",
+            "data.value.gradleDistOld",
+            "data.value.gradleDaemonLogs",
+            "data.value.gradleRegenerates",
+            // wsl
+            "data.detail.vhdx",
+            "data.detail.distroDir",
+            "data.detail.wslVersion",
+            "data.detail.sizeSemantics",
+            "data.detail.howToShrink",
+            "data.value.wslVersionUnknown",
+            "data.value.vhdxSizeSemantics",
+            "data.value.vhdxHowToShrink",
+            // docker（未注册，D6）
+            "data.summary.docker",
+            "data.error.dockerCliMissing",
+            "data.error.dockerQuery",
+            "data.error.dockerEmpty",
+            "data.note.dockerDesktopDiskIdle",
+            "data.note.dockerStartHint",
+            "data.note.dockerInsideVm",
+            "data.note.dockerDecimalUnits",
+            "data.note.dockerVirtualSize",
+            "data.note.dockerContainers",
+            "data.note.dockerBuildCache",
+            "data.note.dockerDesktopDisk",
+            "data.note.dockerSkippedRows",
+            "data.detail.imageId",
+            "data.detail.repo",
+            "data.detail.tag",
+            "data.detail.virtualSize",
+            "data.detail.uniqueLayers",
+            "data.detail.volumeName",
+            "data.detail.mountPoint",
+            "data.detail.refCount",
+            // ssh（未注册，D6）
+            "data.summary.ssh",
+            "data.note.sshDuplicates",
+            "data.note.sshOrphans",
+            "data.detail.duplicateOf",
+            "data.detail.fingerprint",
+            "data.detail.comment",
+            "data.detail.permissions",
+            "data.detail.pubkey",
+            "data.value.unreferenced",
+            "data.value.pubkeyPresent",
+            "data.value.pubkeyMissing",
+        ];
+        keys.extend(KEYS_OFF_THE_SMOKE_PATH.iter().map(|k| k.to_string()));
         for root in &roots {
             let _ = std::fs::remove_dir_all(root);
         }
@@ -4392,10 +4569,10 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                 ("last_commit".into(), MetricValue::Int(1_700_000_000)),
                 ("branch".into(), MetricValue::Text("main".into())),
             ]),
-            detail: Some(HashMap::from([(
-                "1. 清理方式".into(),
-                "npm cache clean --force".into(),
-            )])),
+            detail: vec![DetailRow::new(
+                "cleanHow",
+                Text::fmt("data.value.cleanByCommand").arg("cmd", "npm cache clean --force"),
+            )],
             cleanable: true,
             artifact_entries: vec![],
             reclaimable: Some(1_500_000_000),
@@ -4447,7 +4624,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                     group_key: None,
                     path: "/tmp/a".into(),
                     metrics: HashMap::from([("size".into(), MetricValue::Bytes(size))]),
-                    detail: None,
+                    detail: vec![],
                     cleanable: reclaim > 0,
                     artifact_entries: vec![],
                     reclaimable: (reclaim > 0).then_some(reclaim),
@@ -4464,7 +4641,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                     group_key: None,
                     path: "/tmp/b".into(),
                     metrics: HashMap::from([("size".into(), MetricValue::Bytes(0))]),
-                    detail: None,
+                    detail: vec![],
                     cleanable: false,
                     artifact_entries: vec![],
                     reclaimable: Some(999),
@@ -4687,11 +4864,15 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             }
             other => panic!("size 该是字节数，实为 {other:?}"),
         }
-        let d = it.detail.as_ref().unwrap();
-        assert_eq!(d.get("1. 权重层").map(String::as_str), Some("2 个"));
+        let layers = detail_value(it, "weightLayers").expect("该有权重层行");
         assert!(
-            d.get("2. 缺失层").is_some_and(|s| s.starts_with("1 个")),
-            "缺失的层要报出来：{d:?}"
+            matches!(text_arg(layers, "n"), Some(TextArg::Num(2))),
+            "权重层该是 2：{layers:?}"
+        );
+        let missing = detail_value(it, "missingLayers").expect("缺失的层要报出来");
+        assert!(
+            matches!(text_arg(missing, "n"), Some(TextArg::Num(1))),
+            "缺失层该是 1：{missing:?}"
         );
 
         assert_frontend_contract(std::slice::from_ref(&g));
@@ -4758,25 +4939,22 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             }
             other => panic!("size 该是字节数，实为 {other:?}"),
         }
-        let d = a.detail.as_ref().unwrap();
-        let line = d.get("3. 共享层").expect("共享的 tag 该有共享层明细");
-        assert!(line.contains("1 个层被其它模型引用"), "line: {line}");
+        let line = detail_value(a, "sharedLayers").expect("共享的 tag 该有共享层明细");
+        assert!(
+            matches!(text_arg(line, "n"), Some(TextArg::Num(1))),
+            "line: {line:?}"
+        );
         // 腾出 = 独占层（共享层删了别人还在用，不算）
         assert!(
-            line.contains(&human_bytes(1024 * 1024)),
-            "腾出该是独占的 1 MB：{line}"
+            matches!(text_arg(line, "freed"), Some(TextArg::Bytes(b)) if *b == 1024 * 1024),
+            "腾出该是独占的 1 MB：{line:?}"
         );
 
         let b = find("qwen3:14b-q4");
-        let line = b
-            .detail
-            .as_ref()
-            .unwrap()
-            .get("3. 共享层")
-            .expect("q4 同样该有共享层明细");
+        let line = detail_value(b, "sharedLayers").expect("q4 同样该有共享层明细");
         assert!(
-            line.contains(&human_bytes(2 * 1024 * 1024)),
-            "q4 腾出该是 2 MB：{line}"
+            matches!(text_arg(line, "freed"), Some(TextArg::Bytes(b)) if *b == 2 * 1024 * 1024),
+            "q4 腾出该是 2 MB：{line:?}"
         );
 
         assert_frontend_contract(std::slice::from_ref(&g));
@@ -4791,8 +4969,12 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
 
         let g = LocalModelsScanner::new(root.clone()).scan();
         assert_eq!(g.items.len(), 1);
-        let d = g.items[0].detail.as_ref().unwrap();
-        assert!(d.get("3. 共享层").is_none(), "独占时共享行是噪音：{d:?}");
+        let it = &g.items[0];
+        assert!(
+            detail_value(it, "sharedLayers").is_none(),
+            "独占时共享行是噪音：{:?}",
+            it.detail
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -4847,43 +5029,23 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         assert_eq!(real.group_key.as_deref(), Some("LM Studio"));
         assert!(matches!(real.metrics.get("size"), Some(MetricValue::Bytes(v)) if *v > 0));
         assert_eq!(
-            real.detail
-                .as_ref()
-                .unwrap()
-                .get("1. 发布者")
-                .map(String::as_str),
+            detail_value(real, "publisher").and_then(text_raw),
             Some("Qwen")
         );
 
         let st = by_suffix("gemma-4-31b");
         assert_eq!(
-            st.detail
-                .as_ref()
-                .unwrap()
-                .get("2. 状态")
-                .map(String::as_str),
-            Some("下载暂存：清单与缩略图可能在、权重没下完")
+            detail_value(st, "status").and_then(text_key),
+            Some("data.value.downloadStaging")
         );
         assert_eq!(
-            st.detail
-                .as_ref()
-                .unwrap()
-                .get("3. 权重")
-                .map(String::as_str),
-            Some("不在磁盘上（目录为空）")
+            detail_value(st, "weights").and_then(text_key),
+            Some("data.value.weightsNotOnDisk")
         );
 
         let hf_item = by_suffix("org/name");
         assert_eq!(hf_item.group_key.as_deref(), Some("HuggingFace"));
-        assert_eq!(
-            hf_item
-                .detail
-                .as_ref()
-                .unwrap()
-                .get("1. 组织")
-                .map(String::as_str),
-            Some("org")
-        );
+        assert_eq!(detail_value(hf_item, "org").and_then(text_raw), Some("org"));
 
         assert_frontend_contract(std::slice::from_ref(&g));
         std::fs::remove_dir_all(&root).ok();
@@ -5090,7 +5252,10 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let r = scanner.clean_repo(&plan);
         assert!(r.succeeded.is_empty(), "未确认不该成功任何一项");
         assert_eq!(r.failed.len(), 1);
-        assert_eq!(r.failed[0].reason, "未确认");
+        assert_eq!(
+            text_key(&r.failed[0].reason),
+            Some("data.cleanFail.unconfirmed")
+        );
         assert_eq!(r.freed_bytes, 0);
         assert!(repo.exists(), "未确认时不该碰磁盘");
 
@@ -5141,7 +5306,10 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let r = scanner.clean_repo(&plan);
         assert!(r.succeeded.is_empty(), "有未推送提交不该被删");
         assert_eq!(r.failed.len(), 1);
-        assert_eq!(r.failed[0].reason, "有未推送提交");
+        assert_eq!(
+            text_key(&r.failed[0].reason),
+            Some("data.cleanFail.unpushed")
+        );
         assert_eq!(r.freed_bytes, 0);
         assert!(repo.exists(), "被拒的仓库必须原地留在磁盘上");
 
@@ -5237,8 +5405,10 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             be.tags
         );
         match be.metrics.get("dirty") {
-            Some(MetricValue::Text(s)) => assert_eq!(s, "干净", "无未推送无改动 → 干净"),
-            other => panic!("dirty 该是文本，实为 {other:?}"),
+            Some(MetricValue::TextKey(k)) => {
+                assert_eq!(k, "data.value.clean", "无未推送无改动 → 干净")
+            }
+            other => panic!("dirty 该是文案键，实为 {other:?}"),
         }
 
         std::fs::remove_dir_all(&root).ok();
@@ -5276,7 +5446,10 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let r = scanner.clean_repo(&plan);
         assert!(r.succeeded.is_empty(), "从未推送过的仓库不该被删");
         assert_eq!(r.failed.len(), 1);
-        assert_eq!(r.failed[0].reason, "有未推送提交");
+        assert_eq!(
+            text_key(&r.failed[0].reason),
+            Some("data.cleanFail.unpushed")
+        );
         assert!(repo.exists(), "被拒的仓库必须原地留在磁盘上");
 
         std::fs::remove_dir_all(repo.parent().unwrap()).ok();
@@ -5301,8 +5474,8 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             item.tags
         );
         match item.metrics.get("dirty") {
-            Some(MetricValue::Text(s)) => assert_eq!(s, "干净"),
-            other => panic!("dirty 该是文本，实为 {other:?}"),
+            Some(MetricValue::TextKey(k)) => assert_eq!(k, "data.value.clean"),
+            other => panic!("dirty 该是文案键，实为 {other:?}"),
         }
 
         std::fs::remove_dir_all(repo.parent().unwrap()).ok();
@@ -5343,7 +5516,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let r = scanner.clean_repo(&plan);
         assert!(r.succeeded.is_empty(), "有 stash 不该被删");
         assert_eq!(r.failed.len(), 1);
-        assert_eq!(r.failed[0].reason, "有 stash 未处理");
+        assert_eq!(text_key(&r.failed[0].reason), Some("data.cleanFail.stash"));
         assert!(repo.exists(), "被拒的仓库必须原地留在磁盘上");
 
         std::fs::remove_dir_all(repo.parent().unwrap()).ok();
@@ -5434,8 +5607,8 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             item.tags
         );
         match item.metrics.get("dirty") {
-            Some(MetricValue::Text(s)) => assert_eq!(s, "推送未核实"),
-            other => panic!("dirty 该是文本，实为 {other:?}"),
+            Some(MetricValue::TextKey(k)) => assert_eq!(k, "data.value.pushUnknown"),
+            other => panic!("dirty 该是文案键，实为 {other:?}"),
         }
 
         std::fs::remove_dir_all(&root).ok();
@@ -5524,8 +5697,8 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         assert!(r.succeeded.is_empty(), "有未提交改动不该被删");
         assert_eq!(r.failed.len(), 1);
         assert!(
-            r.failed[0].reason.contains("未提交改动"),
-            "reason: {}",
+            text_key(&r.failed[0].reason) == Some("data.cleanFail.dirtyFiles"),
+            "reason: {:?}",
             r.failed[0].reason
         );
         assert!(repo.exists(), "被拒的仓库必须原地留在磁盘上");
@@ -5689,11 +5862,17 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                 json["artifact_entries"], expected_json,
                 "全部 15 个目录与原始字节都应保留"
             );
-            let d = item.detail.as_ref().expect("detail 应存在");
-            assert!(d["构建产物"].contains("15 个目录"));
-            assert!(d["构建产物"].contains("node_modules×14"));
-            assert!(d["构建产物"].contains("target"));
-            assert!(!d.contains_key("产物明细"), "旧多行文本契约应移除");
+            let line = detail_value(item, "artifacts").expect("detail 该有构建产物行");
+            assert!(
+                matches!(text_arg(line, "dirs"), Some(TextArg::Num(15))),
+                "该是 15 个目录：{line:?}"
+            );
+            let list = match text_arg(line, "list") {
+                Some(TextArg::Raw(s)) => s.as_str(),
+                other => panic!("目录清单该是裸字串，实为 {other:?}"),
+            };
+            assert!(list.contains("node_modules×14"), "list: {list}");
+            assert!(list.contains("target"), "list: {list}");
             assert!(item.tags.iter().any(|tag| tag.key == "artifacts"));
             match item.metrics.get("artifacts") {
                 Some(MetricValue::Bytes(b)) => {
@@ -5780,10 +5959,13 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
             other => panic!("该有 artifacts 指标，实为 {other:?}"),
         }
         assert!(item.tags.iter().any(|t| t.key == "artifacts"));
-        let detail = item.detail.as_ref().unwrap();
-        let line = detail.get("构建产物").expect("detail 该有构建产物行");
-        assert!(line.contains("node_modules"), "line: {line}");
-        assert!(!line.contains("dist"), "无标记的 dist 不进账: {line}");
+        let line = detail_value(item, "artifacts").expect("detail 该有构建产物行");
+        let list = match text_arg(line, "list") {
+            Some(TextArg::Raw(s)) => s.as_str(),
+            other => panic!("目录清单该是裸字串，实为 {other:?}"),
+        };
+        assert!(list.contains("node_modules"), "list: {list}");
+        assert!(!list.contains("dist"), "无标记的 dist 不进账: {list}");
         assert_eq!(
             item.artifact_entries,
             vec![crate::scan::ArtifactEntry {
@@ -5791,7 +5973,6 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
                 size_bytes: tree_bytes(&nm),
             }]
         );
-        assert!(!detail.contains_key("产物明细"));
         assert_frontend_contract(std::slice::from_ref(&g));
 
         std::fs::remove_dir_all(repo.parent().unwrap()).ok();
@@ -5833,7 +6014,10 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let r = scanner.clean_artifacts(&plan);
         assert!(r.succeeded.is_empty());
         assert_eq!(r.failed.len(), 1);
-        assert_eq!(r.failed[0].reason, "未确认");
+        assert_eq!(
+            text_key(&r.failed[0].reason),
+            Some("data.cleanFail.unconfirmed")
+        );
         assert!(nm.exists(), "未确认时不该碰磁盘");
 
         std::fs::remove_dir_all(repo.parent().unwrap()).ok();
@@ -5860,8 +6044,8 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         assert!(r.succeeded.is_empty(), "不该成功任何一项");
         assert_eq!(r.failed.len(), 1);
         assert!(
-            r.failed[0].reason.contains("不是 Git 仓库"),
-            "reason: {}",
+            text_key(&r.failed[0].reason) == Some("data.cleanFail.notGitRepo"),
+            "reason: {:?}",
             r.failed[0].reason
         );
         assert!(nm.exists(), "被拒的目录必须原地不动");
@@ -5885,8 +6069,8 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         assert!(r.succeeded.is_empty());
         assert_eq!(r.failed.len(), 1);
         assert!(
-            r.failed[0].reason.contains("未发现可清理的构建产物"),
-            "reason: {}",
+            text_key(&r.failed[0].reason) == Some("data.cleanFail.noArtifacts"),
+            "reason: {:?}",
             r.failed[0].reason
         );
         assert!(repo.exists(), "被拒的仓库必须原地留在磁盘上");
@@ -5915,8 +6099,8 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         assert!(r.succeeded.is_empty(), "藏着仓库的产物不许删");
         assert_eq!(r.failed.len(), 1);
         assert!(
-            r.failed[0].reason.contains("复核未通过"),
-            "reason: {}",
+            text_key(&r.failed[0].reason) == Some("data.cleanFail.artifactRecheckFailed"),
+            "reason: {:?}",
             r.failed[0].reason
         );
         assert!(nm.exists(), "被拒的产物目录必须原地不动");
@@ -6144,7 +6328,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         assert!(
             r.failed
                 .iter()
-                .any(|f| f.reason.contains("不是本仓库内的产物目录路径")),
+                .any(|f| text_key(&f.reason) == Some("data.cleanFail.artifactOutsideRepo")),
             "failed: {:?}",
             r.failed
         );
@@ -6178,7 +6362,9 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let r = scanner.clean_artifacts(&plan);
         assert!(r.succeeded.is_empty());
         assert!(
-            r.failed.iter().any(|f| f.reason.contains("复核未通过")),
+            r.failed
+                .iter()
+                .any(|f| text_key(&f.reason) == Some("data.cleanFail.artifactRecheckFailed")),
             "failed: {:?}",
             r.failed
         );
@@ -6207,7 +6393,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
         let r = scanner.clean_artifacts(&plan);
         assert!(r.succeeded.is_empty());
         assert!(
-            r.failed[0].reason.contains("未发现可清理的构建产物"),
+            text_key(&r.failed[0].reason) == Some("data.cleanFail.noArtifacts"),
             "failed: {:?}",
             r.failed
         );

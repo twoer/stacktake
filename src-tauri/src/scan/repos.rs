@@ -10,8 +10,8 @@
 
 use crate::scan::dirsize;
 use crate::scan::{
-    ArtifactEntry, AssetGroup, CleanFailure, CleanPlan, CleanResult, Field, Item, MetricValue,
-    Scanner, Tag, Text, TextArg,
+    ArtifactEntry, AssetGroup, CleanFailure, CleanPlan, CleanResult, DetailRow, Field, Item,
+    MetricValue, Scanner, Tag, Text, TextArg, clean_fail_text,
 };
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -692,33 +692,40 @@ impl RepoInfo {
             },
         );
         let status = match self.push {
-            Push::Ahead { ahead, behind } => format!("↑{ahead} ↓{behind}"),
-            Push::Unknown => "推送未核实".into(),
-            Push::Clean if self.dirty_files > 0 => format!("{} 处改动", self.dirty_files),
-            Push::Clean => "干净".into(),
+            // 箭头 + 数字是语言无关的符号串，不走文案键
+            Push::Ahead { ahead, behind } => Text::raw(format!("↑{ahead} ↓{behind}")),
+            Push::Unknown => Text::key("data.value.pushUnknown"),
+            Push::Clean if self.dirty_files > 0 => {
+                Text::fmt("data.value.dirtyFiles").arg("n", TextArg::num(self.dirty_files))
+            }
+            Push::Clean => Text::key("data.value.clean"),
         };
-        metrics.insert("dirty".into(), MetricValue::text(status));
+        metrics.insert("dirty".into(), MetricValue::from(status));
 
-        let mut detail: HashMap<String, String> = HashMap::new();
-        detail.insert("路径".into(), self.path.display().to_string());
-        detail.insert(
-            "远端".into(),
-            if self.remote.is_empty() {
-                "无".into()
-            } else {
-                self.remote.clone()
-            },
-        );
-        detail.insert(
-            "最后提交".into(),
-            if self.last_commit_msg.is_empty() {
-                "—".into()
-            } else {
-                self.last_commit_msg.clone()
-            },
-        );
+        let mut detail = vec![
+            DetailRow::new("path", self.path.display().to_string()),
+            DetailRow::new(
+                "remote",
+                if self.remote.is_empty() {
+                    Text::key("data.value.none")
+                } else {
+                    Text::raw(self.remote.clone())
+                },
+            ),
+            DetailRow::new(
+                "lastCommit",
+                if self.last_commit_msg.is_empty() {
+                    "—".into()
+                } else {
+                    self.last_commit_msg.clone()
+                },
+            ),
+        ];
         if let Some(g) = self.git_only {
-            detail.insert(".git 体积".into(), human_bytes(g));
+            detail.push(DetailRow::new(
+                "gitSize",
+                Text::fmt("data.value.bytes").arg("bytes", TextArg::bytes(g)),
+            ));
         }
         // 完整保留同一次遍历的结果，展示截断不应丢掉清理选择所需的目录。
         let mut artifact_entries: Vec<ArtifactEntry> = self
@@ -763,16 +770,14 @@ impl RepoInfo {
                     }
                 })
                 .collect::<Vec<_>>()
-                .join("、");
-            detail.insert(
-                "构建产物".into(),
-                format!(
-                    "{} · {} 个目录（{}）",
-                    human_bytes(artifact_bytes),
-                    self.artifacts.len(),
-                    kinds
-                ),
-            );
+                .join(", ");
+            detail.push(DetailRow::new(
+                "artifacts",
+                Text::fmt("data.value.artifactSummary")
+                    .arg("bytes", TextArg::bytes(artifact_bytes))
+                    .arg("dirs", TextArg::num(self.artifacts.len()))
+                    .arg("list", kinds),
+            ));
         }
 
         Item {
@@ -787,7 +792,7 @@ impl RepoInfo {
             path: self.path.display().to_string(),
             metrics,
             kind_label: None,
-            detail: Some(detail),
+            detail,
             artifact_entries,
             cleanable,
             reclaimable: if cleanable { self.size } else { None },
@@ -1069,7 +1074,7 @@ impl RepoScanner {
         if !plan.confirmed {
             result.failed.push(CleanFailure {
                 id: "*".into(),
-                reason: "未确认".into(),
+                reason: clean_fail_text("unconfirmed"),
             });
             return result;
         }
@@ -1080,10 +1085,11 @@ impl RepoScanner {
 
             if !matches!(info.push, Push::Clean) || info.dirty_files > 0 || info.has_stash {
                 let reason = match info.push {
-                    Push::Ahead { .. } => "有未推送提交".into(),
-                    Push::Unknown => "推送状态无法核实（按可能有未推送处理）".into(),
-                    Push::Clean if info.has_stash => "有 stash 未处理".into(),
-                    Push::Clean => format!("{} 处未提交改动", info.dirty_files),
+                    Push::Ahead { .. } => clean_fail_text("unpushed"),
+                    Push::Unknown => clean_fail_text("pushUnknown"),
+                    Push::Clean if info.has_stash => clean_fail_text("stash"),
+                    Push::Clean => Text::fmt("data.cleanFail.dirtyFiles")
+                        .arg("n", TextArg::num(info.dirty_files)),
                 };
                 result.failed.push(CleanFailure {
                     id: id.clone(),
@@ -1099,7 +1105,7 @@ impl RepoScanner {
                 }
                 Err(e) => result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: e.to_string(),
+                    reason: Text::raw(e.to_string()),
                 }),
             }
         }
@@ -1129,7 +1135,7 @@ impl RepoScanner {
         if !plan.confirmed {
             result.failed.push(CleanFailure {
                 id: "*".into(),
-                reason: "未确认".into(),
+                reason: clean_fail_text("unconfirmed"),
             });
             return result;
         }
@@ -1139,21 +1145,21 @@ impl RepoScanner {
             if !path.is_absolute() {
                 result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: "不是绝对路径".into(),
+                    reason: clean_fail_text("notAbsolute"),
                 });
                 continue;
             }
             if !path.is_dir() {
                 result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: "仓库目录不存在，重扫一次".into(),
+                    reason: clean_fail_text("repoMissing"),
                 });
                 continue;
             }
             if !path.join(".git").exists() {
                 result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: "不是 Git 仓库（.git 不存在）".into(),
+                    reason: clean_fail_text("notGitRepo"),
                 });
                 continue;
             }
@@ -1172,7 +1178,7 @@ impl RepoScanner {
                                 all_ok = false;
                                 result.failed.push(CleanFailure {
                                     id: rel.clone(),
-                                    reason: "不是本仓库内的产物目录路径".into(),
+                                    reason: clean_fail_text("artifactOutsideRepo"),
                                 });
                             }
                         }
@@ -1186,7 +1192,7 @@ impl RepoScanner {
             if dirs.is_empty() {
                 result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: "未发现可清理的构建产物".into(),
+                    reason: clean_fail_text("noArtifacts"),
                 });
                 continue;
             }
@@ -1203,7 +1209,7 @@ impl RepoScanner {
                     all_ok = false;
                     result.failed.push(CleanFailure {
                         id: d.display().to_string(),
-                        reason: "复核未通过（目录里藏着 Git 仓库或已不是产物目录），跳过".into(),
+                        reason: clean_fail_text("artifactRecheckFailed"),
                     });
                     continue;
                 }
@@ -1217,7 +1223,7 @@ impl RepoScanner {
                         all_ok = false;
                         result.failed.push(CleanFailure {
                             id: d.display().to_string(),
-                            reason: e.to_string(),
+                            reason: Text::raw(e.to_string()),
                         });
                     }
                 }

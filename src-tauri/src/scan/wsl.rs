@@ -47,7 +47,7 @@
 use crate::scan::platform::Platform;
 use crate::scan::repos::{dir_sizes_batch, mtime_secs};
 use crate::scan::{
-    AssetGroup, Field, Item, MetricValue, Scanner, Text, TextArg, field_text, kind_text,
+    AssetGroup, DetailRow, Field, Item, MetricValue, Scanner, Text, TextArg, field_text, kind_text,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -285,9 +285,9 @@ impl Scanner for WslScanner {
 fn distro_item(d: &WslDistro, size: Option<u64>) -> Item {
     let vhdx = d.vhdx_path();
     let version = match d.version {
-        1 => "1".to_string(),
-        2 => "2".to_string(),
-        other => format!("未知（注册表值 {other}）"),
+        1 => Text::raw("1"),
+        2 => Text::raw("2"),
+        other => Text::fmt("data.value.wslVersionUnknown").arg("raw", TextArg::Num(other.into())),
     };
 
     let mut metrics: HashMap<String, MetricValue> = HashMap::new();
@@ -310,19 +310,13 @@ fn distro_item(d: &WslDistro, size: Option<u64>) -> Item {
     };
     metrics.insert("kind".into(), MetricValue::text(kind));
 
-    // detail 的键名带编号前缀：HashMap 顺序不定，前端按编号剥前缀后渲染
-    let mut detail: HashMap<String, String> = HashMap::new();
-    detail.insert("0. 虚拟磁盘".into(), vhdx.display().to_string());
-    detail.insert("1. 发行版目录".into(), d.base_path.display().to_string());
-    detail.insert("2. WSL 版本".into(), version);
-    detail.insert(
-        "3. 体积口径".into(),
-        "vhdx 文件的占用空间，不是发行版里实际用了多少：动态扩展、只涨不缩".into(),
-    );
-    detail.insert(
-        "4. 怎么缩".into(),
-        "发行版内 fstrim -av → wsl --shutdown → 管理员 Optimize-VHD -Mode Full".into(),
-    );
+    let detail = vec![
+        DetailRow::new("vhdx", vhdx.display().to_string()),
+        DetailRow::new("distroDir", d.base_path.display().to_string()),
+        DetailRow::new("wslVersion", version),
+        DetailRow::new("sizeSemantics", Text::key("data.value.vhdxSizeSemantics")),
+        DetailRow::new("howToShrink", Text::key("data.value.vhdxHowToShrink")),
+    ];
 
     Item {
         id: format!("wsl:{}", d.name),
@@ -337,7 +331,7 @@ fn distro_item(d: &WslDistro, size: Option<u64>) -> Item {
         // 虚拟磁盘的完整路径在 detail 里（U4 的两个动作只读、不执行）。
         path: d.base_path.display().to_string(),
         metrics,
-        detail: Some(detail),
+        detail,
         artifact_entries: vec![],
         cleanable: false,
         reclaimable: None,

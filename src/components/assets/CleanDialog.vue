@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { Item } from "@/lib/types";
-import { reclaimableOf } from "@/lib/types";
+import { detailValueOf, reclaimableOf } from "@/lib/types";
 import { aiKindLabel, cleanKindOf, isSessionKind } from "@/lib/assets";
 import { rowFullName } from "@/lib/rows";
-import { t } from "@/lib/i18n";
+import { renderText, t } from "@/lib/i18n";
 import { useModalFocus } from "@/composables/useModalFocus";
 import { Button } from "@/components/ui/button";
 import ByteValue from "@/components/ByteValue.vue";
@@ -46,9 +46,10 @@ useModalFocus(
  */
 const cleanKind = computed(() => cleanKindOf(props.groupId));
 
-/** 工具链缓存删掉的后果：按 detail 的说明逐条显示，不空喊「可恢复」。 */
+/** 工具链缓存删掉的后果：按 detail 的说明行（`data.detail.note`）显示，不空喊「可恢复」。 */
 function cleanNote(item: Item): string {
-  return item.detail?.["3. 说明"] ?? "";
+  const v = detailValueOf(item, "data.detail.note");
+  return v ? renderText(v) : "";
 }
 </script>
 

@@ -13,7 +13,9 @@
 //! 顺带解决一个实际痛点：`~/.ssh` 里同一台机器常有两份 key（`ip_ed25519` 和 `ip_id_ed25519`），
 //! 以及新建的 key 忘了加进 config。这些会被标成「未被引用」和「疑似重复」。
 
-use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner, Tag, Text, field_text};
+use crate::scan::{
+    AssetGroup, DetailRow, Field, Item, MetricValue, Scanner, Tag, Text, TextArg, field_text,
+};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -138,9 +140,8 @@ impl Scanner for SshScanner {
                     && group.len() > 1
                 {
                     it.tags.push(Tag::raw(format!("重复×{}", group.len())));
-                    if let Some(d) = it.detail.as_mut() {
-                        d.insert("重复于".into(), group.join(", "));
-                    }
+                    it.detail
+                        .push(DetailRow::new("duplicateOf", group.join(", ")));
                 }
                 it
             })
@@ -148,29 +149,25 @@ impl Scanner for SshScanner {
 
         let mut notes: Vec<Text> = Vec::new();
         for (fp, group) in &dupes {
-            notes.push(Text::raw(format!(
-                "{} 有 {} 份副本：{}",
-                &fp[..fp.len().min(20)],
-                group.len(),
-                group.join(", ")
-            )));
+            notes.push(
+                Text::fmt("data.note.sshDuplicates")
+                    .arg("fp", &fp[..fp.len().min(20)])
+                    .arg("n", TextArg::num(group.len()))
+                    .arg("names", group.join(", ")),
+            );
         }
+        // 标签键自 P2a 起是 ASCII（`Tag::new("unreferenced")`），比较也得跟着走
         let orphans = items
             .iter()
-            .filter(|i| i.tags.iter().any(|t| t.key == "未引用"))
+            .filter(|i| i.tags.iter().any(|t| t.key == "unreferenced"))
             .count();
         if orphans > 0 {
-            notes.push(Text::raw(format!(
-                "{} 把密钥未被 ~/.ssh/config 引用",
-                orphans
-            )));
+            notes.push(Text::fmt("data.note.sshOrphans").arg("n", TextArg::num(orphans)));
         }
 
-        let summary = Text::raw(format!(
-            "{} 把私钥 · {} 把未被 config 引用",
-            items.len(),
-            orphans
-        ));
+        let summary = Text::fmt("data.summary.ssh")
+            .arg("count", TextArg::num(items.len()))
+            .arg("orphans", TextArg::num(orphans));
 
         AssetGroup {
             id: self.id().into(),
@@ -338,18 +335,19 @@ fn build_item(
     }
 
     let usage = if referenced_by.is_empty() {
-        "未挂载".to_string()
+        MetricValue::key("data.value.unreferenced")
     } else {
-        referenced_by.join(", ")
+        MetricValue::text(referenced_by.join(", "))
     };
 
     let mut metrics: HashMap<String, MetricValue> = HashMap::new();
-    let type_str = match (meta.bits, meta.algo.as_str()) {
-        (Some(b), a) if a != "未知" => format!("{} {}", a, b),
-        (_, a) if a != "未知" => a.to_string(),
-        _ => "未知".into(),
+    // `KeyMeta.algo` 解析不出时留的哨兵值是内部约定，不进指标——未知走键
+    let type_metric = match (meta.bits, meta.algo.as_str()) {
+        (Some(b), a) if a != "未知" => MetricValue::text(format!("{} {}", a, b)),
+        (_, a) if a != "未知" => MetricValue::text(a.to_string()),
+        _ => MetricValue::key("data.value.unknown"),
     };
-    metrics.insert("type".into(), MetricValue::text(type_str));
+    metrics.insert("type".into(), type_metric);
     metrics.insert(
         "created".into(),
         match meta
@@ -360,28 +358,27 @@ fn build_item(
             None => MetricValue::key("data.value.unknown"),
         },
     );
-    metrics.insert("usage".into(), MetricValue::text(usage));
+    metrics.insert("usage".into(), usage);
 
-    let mut detail: HashMap<String, String> = HashMap::new();
-    detail.insert("路径".into(), path.display().to_string());
+    let mut detail = vec![DetailRow::new("path", path.display().to_string())];
     if let Some(fp) = &meta.fingerprint {
-        detail.insert("指纹".into(), fp.clone());
+        detail.push(DetailRow::new("fingerprint", fp.clone()));
     }
     if let Some(c) = &meta.comment {
-        detail.insert("备注".into(), c.clone());
+        detail.push(DetailRow::new("comment", c.clone()));
     }
     #[cfg(unix)]
     if let Some(p) = meta.permissions_perm() {
-        detail.insert("权限".into(), format!("{:o}", p));
+        detail.push(DetailRow::new("permissions", format!("{:o}", p)));
     }
-    detail.insert(
-        "公钥".into(),
-        if has_pub {
-            "已生成".into()
+    detail.push(DetailRow::new(
+        "pubkey",
+        Text::key(if has_pub {
+            "data.value.pubkeyPresent"
         } else {
-            "缺失".into()
-        },
-    );
+            "data.value.pubkeyMissing"
+        }),
+    ));
 
     Item {
         id: path.display().to_string(),
@@ -394,7 +391,7 @@ fn build_item(
         group_key: None,
         path: path.display().to_string(),
         metrics,
-        detail: Some(detail),
+        detail,
         artifact_entries: vec![],
         cleanable: false,
         reclaimable: None,

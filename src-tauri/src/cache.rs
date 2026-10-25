@@ -83,7 +83,17 @@ use std::path::{Path, PathBuf};
 /// - **补充目录进信封**（`extra_repo_roots`）：信封新增字段且**没有** `serde(default)`，
 ///   老缓存反序列化直接失败、等于自动失效——但仍要登记：哪天为了兼容性给它加上
 ///   default，这条就是「那时必须换个失效办法」的依据。
-pub const SCHEMA_VERSION: u32 = 20;
+///
+/// **第十一种：明细与文案契约（P2b）**（19 → 20 → 21）。两刀同处一批未发布的改动，
+/// 20 号只活在中间态，按第十种的先例合写：
+/// - 20：后端下发**文案键**（P2a，Track I）——`Text` / `Tag{key,label}` /
+///   `MetricValue::TextKey` 进缓存，成品中文从此不出现在展示位。
+/// - 21：`Item.detail` 从 `HashMap<String, String>` 改成 `Vec<DetailRow{label, value}>`
+///   （两边都是 `Text`，顺序即数组顺序，`N. ` 数字前缀随之消亡）。字段带
+///   `serde(default)`，老缓存读得出来但 detail 是空数组——静默缺失正是第十种
+///   立下的「仍要跳版本」的理由。`CleanFailure` 不进缓存，但同批改了 `Text`，
+///   记在这条里免得下次沿革断档。
+pub const SCHEMA_VERSION: u32 = 21;
 
 const CACHE_FILE: &str = "scan-cache.json";
 

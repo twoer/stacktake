@@ -24,8 +24,10 @@
 //! 全部走 `docker system df` / `image inspect` / `volume inspect`，没有任何写操作，
 //! 也不注册清理命令（见 `mod.rs` 里清理入口的说明）。
 
-use crate::scan::repos::{dir_size_fast, human_bytes};
-use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner, Tag, Text, field_text};
+use crate::scan::repos::dir_size_fast;
+use crate::scan::{
+    AssetGroup, DetailRow, Field, Item, MetricValue, Scanner, Tag, Text, TextArg, field_text,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -59,23 +61,21 @@ impl DockerScanner {
 
     /// 守护进程不可用（或压根没装 docker）时的分组：仍然把磁盘占用报出来，
     /// 那正是没启动 Docker Desktop 的人最想知道的一件事。
-    fn unavailable(&self, reason: &str, disk: Option<u64>) -> AssetGroup {
-        let mut notes: Vec<String> = Vec::new();
+    fn unavailable(&self, reason: Text, disk: Option<u64>) -> AssetGroup {
+        let mut notes: Vec<Text> = Vec::new();
         if let Some(d) = disk {
-            notes.push(format!(
-                "Docker Desktop 数据目录实际占用 {}（~/Library/Containers/com.docker.docker），即使不启动也是占着的",
-                human_bytes(d)
-            ));
+            notes
+                .push(Text::fmt("data.note.dockerDesktopDiskIdle").arg("bytes", TextArg::bytes(d)));
         }
-        notes.push("启动 Docker Desktop 后点「重扫」，就能看到镜像与卷的明细".into());
+        notes.push(Text::key("data.note.dockerStartHint"));
         AssetGroup {
             id: self.id().into(),
             label: self.label(),
-            summary: Text::raw(reason.to_string()),
+            summary: reason.clone(),
             fields: docker_fields(),
             items: vec![],
-            notes: Some(notes.into_iter().map(Text::from).collect()),
-            error: Some(Text::raw(reason.to_string())),
+            notes: Some(notes),
+            error: Some(reason),
             supports_clean: false,
         }
     }
@@ -418,12 +418,17 @@ impl Scanner for DockerScanner {
         let disk = self.desktop.as_deref().and_then(dir_size_fast);
 
         let Some(bin) = self.bin.as_deref() else {
-            return self.unavailable("未找到 docker 命令行", disk);
+            return self.unavailable(Text::key("data.error.dockerCliMissing"), disk);
         };
 
         let df = match run(bin, &["system", "df", "--format", "{{json .}}"]) {
             Ok(s) => s,
-            Err(e) => return self.unavailable(&format!("无法查询 docker：{e}"), disk),
+            Err(e) => {
+                return self.unavailable(
+                    Text::fmt("data.error.dockerQuery").arg("error", e.to_string()),
+                    disk,
+                );
+            }
         };
         let rows = parse_df_rows(&df);
         let verbose = run(bin, &["system", "df", "-v"]).unwrap_or_default();
@@ -456,15 +461,23 @@ impl Scanner for DockerScanner {
             );
             metrics.insert("refs".into(), MetricValue::Int(im.containers as i64));
 
-            let mut detail: HashMap<String, String> = HashMap::new();
-            // 键名前缀编号：`Item.detail` 是 HashMap，序列化顺序不确定，
-            // 前端按对象键序直接渲染，不编号构成清单会乱序。
-            detail.insert("1. 镜像 ID".into(), im.id.clone());
-            detail.insert("2. 仓库".into(), im.repo.clone());
-            detail.insert("3. 标签".into(), im.tag.clone());
-            detail.insert("4. 虚拟大小".into(), human_bytes(im.size));
-            detail.insert("5. 共享层".into(), human_bytes(im.shared));
-            detail.insert("6. 独占层（删掉可回收）".into(), human_bytes(im.unique));
+            let detail = vec![
+                DetailRow::new("imageId", im.id.clone()),
+                DetailRow::new("repo", im.repo.clone()),
+                DetailRow::new("tag", im.tag.clone()),
+                DetailRow::new(
+                    "virtualSize",
+                    Text::fmt("data.value.bytes").arg("bytes", TextArg::bytes(im.size)),
+                ),
+                DetailRow::new(
+                    "sharedLayers",
+                    Text::fmt("data.value.bytes").arg("bytes", TextArg::bytes(im.shared)),
+                ),
+                DetailRow::new(
+                    "uniqueLayers",
+                    Text::fmt("data.value.bytes").arg("bytes", TextArg::bytes(im.unique)),
+                ),
+            ];
 
             items.push(Item {
                 id: format!("docker:image:{}", im.id),
@@ -481,7 +494,7 @@ impl Scanner for DockerScanner {
                 group_key: Some("镜像".into()),
                 path: format!("docker://{label}"),
                 metrics,
-                detail: Some(detail),
+                detail,
                 artifact_entries: vec![],
                 // 回收量用独占层而不是虚拟大小：共享层删了这个镜像也还在别的镜像里，
                 // 按虚拟大小报会重复计算，点一次清理发现没腾出那么多空间。
@@ -516,10 +529,14 @@ impl Scanner for DockerScanner {
             );
             metrics.insert("refs".into(), MetricValue::Int(v.links as i64));
 
-            let mut detail: HashMap<String, String> = HashMap::new();
-            detail.insert("1. 卷名".into(), v.name.clone());
-            detail.insert("2. 挂载点（虚拟机内）".into(), mount);
-            detail.insert("3. 引用数".into(), v.links.to_string());
+            let detail = vec![
+                DetailRow::new("volumeName", v.name.clone()),
+                DetailRow::new("mountPoint", mount),
+                DetailRow::new(
+                    "refCount",
+                    Text::fmt("data.value.count").arg("n", TextArg::Num(v.links.into())),
+                ),
+            ];
 
             items.push(Item {
                 id: format!("docker:volume:{}", v.name),
@@ -536,7 +553,7 @@ impl Scanner for DockerScanner {
                 group_key: Some("卷".into()),
                 path: format!("docker://volume/{}", v.name),
                 metrics,
-                detail: Some(detail),
+                detail,
                 artifact_entries: vec![],
                 cleanable: unused,
                 reclaimable: if unused { Some(v.size) } else { None },
@@ -544,7 +561,7 @@ impl Scanner for DockerScanner {
         }
 
         if items.is_empty() {
-            return self.unavailable("docker 里没有镜像也没有卷", disk);
+            return self.unavailable(Text::key("data.error.dockerEmpty"), disk);
         }
 
         // 明细体积是虚拟大小（共享层重复计算），合计用 docker 自己报的总量：
@@ -557,27 +574,22 @@ impl Scanner for DockerScanner {
         let reclaimable: u64 = items.iter().filter_map(|i| i.reclaimable).sum();
         let unused_count = items.iter().filter(|i| i.cleanable).count();
 
-        let mut notes: Vec<String> = vec![
-            "镜像和卷都在 Docker 虚拟机内部，本机文件系统里没有对应路径，数字全部来自 docker 命令行".into(),
+        let mut notes: Vec<Text> = vec![
+            Text::key("data.note.dockerInsideVm"),
+            Text::key("data.note.dockerDecimalUnits"),
         ];
-        notes.push(
-            "docker 的体积用 1000 进制单位（1 GB = 10⁹ 字节），界面按二进制单位显示，所以这里的数字比 `docker system df` 里看到的小一成左右".into(),
-        );
         if images.iter().any(|i| i.shared > 0) {
-            notes.push(
-                "体积是虚拟大小：共享层被多个镜像重复计算，明细各行之和会大于 docker 报的合计"
-                    .into(),
-            );
+            notes.push(Text::key("data.note.dockerVirtualSize"));
         }
         let container_row = rows
             .iter()
             .find(|r| r.kind == "Containers" && r.total.parse::<u32>().is_ok_and(|n| n > 0));
         if let Some(c) = container_row {
-            notes.push(format!(
-                "另有 {} 个容器（可写层合计 {}），容器段不做明细——可写层普遍只有几 KB，占不了多少空间",
-                c.total,
-                parse_size(&c.size).map(human_bytes).unwrap_or_default()
-            ));
+            notes.push(
+                Text::fmt("data.note.dockerContainers")
+                    .arg("n", c.total.clone())
+                    .arg("bytes", TextArg::bytes(parse_size(&c.size).unwrap_or(0))),
+            );
         }
         let cache_bytes = rows
             .iter()
@@ -585,26 +597,23 @@ impl Scanner for DockerScanner {
             .and_then(|r| parse_size(&r.size))
             .unwrap_or(0);
         if cache_bytes > 0 {
-            notes.push(format!("构建缓存 {}", human_bytes(cache_bytes)));
+            notes.push(
+                Text::fmt("data.note.dockerBuildCache").arg("bytes", TextArg::bytes(cache_bytes)),
+            );
         }
         if let Some(d) = disk {
-            notes.push(format!(
-                "Docker Desktop 数据目录实际占用 {}（~/Library/Containers/com.docker.docker）——含虚拟机系统与日志，比上面各项之和大，也比 summary 里的数字大",
-                human_bytes(d)
-            ));
+            notes.push(Text::fmt("data.note.dockerDesktopDisk").arg("bytes", TextArg::bytes(d)));
         }
         if skipped > 0 {
-            notes.push(format!("{skipped} 行输出格式不符预期，已跳过"));
+            notes.push(Text::fmt("data.note.dockerSkippedRows").arg("n", TextArg::num(skipped)));
         }
 
-        let summary = Text::raw(format!(
-            "{} 个镜像 · {} 个卷 · 合计 {} · {} 项未被引用 · 共 {}",
-            images.len(),
-            volumes.len(),
-            human_bytes(reported_total),
-            unused_count,
-            human_bytes(reclaimable)
-        ));
+        let summary = Text::fmt("data.summary.docker")
+            .arg("images", TextArg::num(images.len()))
+            .arg("volumes", TextArg::num(volumes.len()))
+            .arg("total", TextArg::bytes(reported_total))
+            .arg("unused", TextArg::num(unused_count))
+            .arg("reclaim", TextArg::bytes(reclaimable));
 
         AssetGroup {
             id: self.id().into(),
@@ -612,7 +621,7 @@ impl Scanner for DockerScanner {
             summary,
             fields: docker_fields(),
             items,
-            notes: Some(notes.into_iter().map(Text::from).collect()),
+            notes: Some(notes),
             error: None,
             supports_clean: false,
         }

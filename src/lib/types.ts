@@ -72,7 +72,8 @@ export interface Item {
   group_key?: string | null
   path: string
   metrics: Record<string, MetricValue>
-  detail?: Record<string, string>
+  /** 检查器明细。P2b 前是 `Record<string, string>`（键带数字前缀排序）。 */
+  detail?: DetailRow[]
   artifact_entries?: ArtifactEntry[]
   cleanable?: boolean
   reclaimable?: number
@@ -132,6 +133,17 @@ export function kindLabelOf(it: Item | null | undefined): string {
   if (!m) return "";
   if (m.t === "k") return translate(m.v);
   return m.t === "s" ? String(m.v) : "";
+}
+
+/**
+ * 按 label 键找明细行的值（键形如 `data.detail.note`）。目前只有清理弹窗
+ * 需要按行寻址（把工具链的「说明」逐条摆出来）；检查器是整列顺序渲染，不走这里。
+ */
+export function detailValueOf(
+  it: Item | null | undefined,
+  labelKey: string,
+): Text | undefined {
+  return it?.detail?.find((r) => r.label.t === "k" && r.label.v === labelKey)?.value;
 }
 
 /** `kind` 指标的**原始值**（筛选词表，与语言无关）。判「这一行是不是某类别」用它，别比展示名。 */
@@ -219,10 +231,10 @@ export interface CleanPlan {
   artifact_targets?: string[]
 }
 
-/** Rust `scan::CleanFailure` 的对应结构——单项失败的原因（给人看的一句话）。 */
+/** Rust `scan::CleanFailure` 的对应结构——单项失败的原因（Text：键或系统错误原文）。 */
 export interface CleanFailure {
   id: string
-  reason: string
+  reason: Text
 }
 
 /** Rust `scan::CleanResult` 的对应结构——清理命令的返回。 */
@@ -273,9 +285,19 @@ export type MetricValue =
   | { t: "z"; v: boolean }
   /** 界面文案（「未知」「无提交」）——存键，切语言只重渲染。 */
   | { t: "k"; v: string }
+  /** 带参数的界面文案（「3 处改动」）——数字由前端按语言格式化（P2b）。 */
+  | { t: "f"; v: { k: string; a: Record<string, TextArg> } }
 
-/** 取裸值。 */
+/** Rust `scan::DetailRow`：检查器「明细」的一行。顺序就是数组顺序（P2b 前是
+ *  `HashMap` + 键名数字前缀），label 是 `data.detail.*` 键，值三种 Text 形态都有。 */
+export interface DetailRow {
+  label: Text
+  value: Text
+}
+
+/** 取裸值（`f` 形态没有裸值，渲染成文案）。 */
 export function metricValue(m: MetricValue): string | number | boolean {
+  if (m.t === "f") return renderText(m);
   return m.v
 }
 
@@ -331,6 +353,8 @@ export function formatMetric(m: MetricValue, temporal?: boolean): string {
       return m.v
     case "k":
       return translate(m.v)
+    case "f":
+      return renderText(m)
   }
 }
 

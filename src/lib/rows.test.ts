@@ -17,6 +17,7 @@ import {
   sectionSize,
   sectionsOf,
   shareLabelOf,
+  sortValue,
   suppressedTagsOf,
   visibleRowsOf,
 } from "@/lib/rows";
@@ -399,5 +400,22 @@ describe("shareLabelOf —— 占比带：≥10% 取整、≥0.5% 一位小数�
 
   it("分母为 0（全机合计 0）不除零，返回空", () => {
     expect(shareLabelOf(sized(25), 0)).toBe("");
+  });
+});
+
+describe("sortValue —— 文案形态指标（k / f，P2b）按渲染后的文案排序", () => {
+  it("k 渲染成译文、f 渲染带参文案；数据形态（b/i/z/s）仍取裸值", () => {
+    expect(sortValue(item({ metrics: { dirty: { t: "k", v: "data.value.clean" } } }), "dirty")).toBe("干净");
+    expect(
+      sortValue(
+        item({ metrics: { dirty: { t: "f", v: { k: "data.value.dirtyFiles", a: { n: { t: "n", v: 3 } } } } } }),
+        "dirty",
+      ),
+    ).toBe("3 处改动");
+    expect(sortValue(item({ metrics: { refs: { t: "i", v: 7 } } }), "refs")).toBe(7);
+  });
+
+  it("s 形态（分支名、—）原样返回，是数据不是文案", () => {
+    expect(sortValue(item({ metrics: { branch: { t: "s", v: "main" } } }), "branch")).toBe("main");
   });
 });

@@ -243,6 +243,9 @@ pub enum MetricValue {
     /// 与 `Text` 不同，它只用于指标格，键一定能在语言包里查到。
     #[serde(rename = "k")]
     TextKey(String),
+    /// 带参数的界面文案（「3 处改动」）——与 `Text::Fmt` 同形，数字由前端按语言格式化。
+    #[serde(rename = "f")]
+    TextFmt(FmtText),
 }
 
 impl MetricValue {
@@ -255,10 +258,51 @@ impl MetricValue {
     }
 }
 
+/// 指标格里放文案时直接从 `Text` 转：`Raw` 仍是裸字串，键与带参键各归各的形态。
+impl From<Text> for MetricValue {
+    fn from(t: Text) -> Self {
+        match t {
+            Text::Raw(s) => MetricValue::Text(s),
+            Text::Key(k) => MetricValue::TextKey(k),
+            Text::Fmt(f) => MetricValue::TextFmt(f),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactEntry {
     pub relative_path: String,
     pub size_bytes: u64,
+}
+
+/// 检查器「明细」的一行。`label` 走 `data.detail.<键>`；`value` 三种形态都会出现：
+/// 路径 / 命令 / 标识这类语言无关的数据用 `Raw`，固定文案用 `Key`，带数字的句子用 `Fmt`。
+///
+/// 顺序就是 Vec 的顺序。此前是 `HashMap<String, String>`：序列化顺序不定，各扫描器
+/// 靠给键名加 `0. ` 数字前缀排序、前端再剥掉——P2b 起不再需要。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DetailRow {
+    pub label: Text,
+    pub value: Text,
+}
+
+impl DetailRow {
+    pub fn new(key: &str, value: impl Into<Text>) -> Self {
+        DetailRow {
+            label: detail_text(key),
+            value: value.into(),
+        }
+    }
+}
+
+/// 明细行标签的统一键，译文在 `data.detail.*`。
+pub fn detail_text(key: &str) -> Text {
+    Text::key(format!("data.detail.{key}"))
+}
+
+/// 清理被拒的原因键，译文在 `data.cleanFail.*`。
+pub fn clean_fail_text(key: &str) -> Text {
+    Text::key(format!("data.cleanFail.{key}"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -294,8 +338,8 @@ pub struct Item {
     /// 类别列的展示名。缺省 = `metrics.kind` 的原值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind_label: Option<Text>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detail: Vec<DetailRow>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifact_entries: Vec<ArtifactEntry>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -442,7 +486,7 @@ pub fn synthesize_overview(groups: &[AssetGroup]) -> AssetGroup {
                 ("count".into(), MetricValue::Int(g.items.len() as i64)),
             ]),
             kind_label: None,
-            detail: None,
+            detail: Vec::new(),
             artifact_entries: vec![],
             cleanable: false,
             reclaimable: None,
@@ -538,7 +582,9 @@ pub struct CleanPlan {
 #[derive(Debug, Clone, Serialize)]
 pub struct CleanFailure {
     pub id: String,
-    pub reason: String,
+    /// 被拒原因。固定文案走 `data.cleanFail.*` 键；废纸篓的系统错误是 `Raw`——
+    /// 操作系统给的字符串本来就按系统语言来，再翻一层只会翻错。
+    pub reason: Text,
 }
 
 #[derive(Debug, Clone, Serialize)]

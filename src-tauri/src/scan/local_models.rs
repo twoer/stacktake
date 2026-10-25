@@ -48,8 +48,10 @@
 //! 兜底 arm）。探测型：一个来源都不存在时整个分组不进侧栏（同 toolchain）。
 
 use crate::scan::dirsize::{dir_size, file_size};
-use crate::scan::repos::{human_bytes, mtime_secs};
-use crate::scan::{AssetGroup, Field, Item, MetricValue, Scanner, Text, TextArg, field_text};
+use crate::scan::repos::mtime_secs;
+use crate::scan::{
+    AssetGroup, DetailRow, Field, Item, MetricValue, Scanner, Text, TextArg, field_text,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -269,25 +271,27 @@ fn ollama_item(
         }
     }
 
-    let mut detail: HashMap<String, String> = HashMap::new();
-    detail.insert("0. 路径".into(), manifest.display().to_string());
-    detail.insert("1. 权重层".into(), format!("{} 个", digests.len()));
+    let mut detail = vec![
+        DetailRow::new("path", manifest.display().to_string()),
+        DetailRow::new(
+            "weightLayers",
+            Text::fmt("data.value.layerCount").arg("n", TextArg::num(digests.len())),
+        ),
+    ];
     if missing > 0 {
-        detail.insert(
-            "2. 缺失层".into(),
-            format!("{missing} 个（权重文件不在磁盘上，未计入体积）"),
-        );
+        detail.push(DetailRow::new(
+            "missingLayers",
+            Text::fmt("data.value.missingLayers").arg("n", TextArg::num(missing)),
+        ));
     }
     if shared_count > 0 {
-        detail.insert(
-            "3. 共享层".into(),
-            format!(
-                "{} 个层被其它模型引用（{}）——删这个模型实际腾出 {}",
-                shared_count,
-                human_bytes(shared_bytes),
-                human_bytes(size - shared_bytes)
-            ),
-        );
+        detail.push(DetailRow::new(
+            "sharedLayers",
+            Text::fmt("data.value.sharedLayers")
+                .arg("n", TextArg::num(shared_count))
+                .arg("shared", TextArg::bytes(shared_bytes))
+                .arg("freed", TextArg::bytes(size - shared_bytes)),
+        ));
     }
 
     Some(Item {
@@ -306,7 +310,7 @@ fn ollama_item(
         ]
         .into_iter()
         .collect(),
-        detail: Some(detail),
+        detail,
         artifact_entries: vec![],
         cleanable: false,
         reclaimable: None,
@@ -370,19 +374,23 @@ fn model_item(dir: &Path, publisher: &str, staging: bool) -> Item {
         .unwrap_or_default();
     let size = dir_size(dir, &std::collections::HashSet::new());
 
-    let mut detail: HashMap<String, String> = HashMap::new();
-    detail.insert("0. 路径".into(), dir.display().to_string());
-    detail.insert("1. 发布者".into(), publisher.into());
+    let mut detail = vec![
+        DetailRow::new("path", dir.display().to_string()),
+        DetailRow::new("publisher", publisher),
+    ];
     if staging {
-        detail.insert(
-            "2. 状态".into(),
-            "下载暂存：清单与缩略图可能在、权重没下完".into(),
-        );
+        detail.push(DetailRow::new(
+            "status",
+            Text::key("data.value.downloadStaging"),
+        ));
     }
     // 目录里没有文件 = 权重不在磁盘上（LM Studio 会把「知道有这个模型」也
     // 留一个空目录）。照实报 0 会让人以为它不占地方，明细里说清楚。
     if size == Some(0) {
-        detail.insert("3. 权重".into(), "不在磁盘上（目录为空）".into());
+        detail.push(DetailRow::new(
+            "weights",
+            Text::key("data.value.weightsNotOnDisk"),
+        ));
     }
 
     // 体积未知（遍历超时）就**不放这个指标**——界面显示 `—`；放 0 等于说它不占地方
@@ -403,7 +411,7 @@ fn model_item(dir: &Path, publisher: &str, staging: bool) -> Item {
         group_key: Some("LM Studio".into()),
         path: dir.display().to_string(),
         metrics,
-        detail: Some(detail),
+        detail,
         artifact_entries: vec![],
         cleanable: false,
         reclaimable: None,
@@ -444,14 +452,10 @@ fn huggingface_items(hub: &Path) -> Vec<Item> {
                 group_key: Some("HuggingFace".into()),
                 path: dir.display().to_string(),
                 metrics,
-                detail: Some(
-                    [
-                        ("0. 路径".to_string(), dir.display().to_string()),
-                        ("1. 组织".to_string(), org.to_string()),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ),
+                detail: vec![
+                    DetailRow::new("path", dir.display().to_string()),
+                    DetailRow::new("org", org),
+                ],
                 artifact_entries: vec![],
                 cleanable: false,
                 reclaimable: None,

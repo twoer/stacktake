@@ -32,10 +32,10 @@
 //! 不会误删。规则可以后续迭代补。
 
 use crate::scan::platform::Platform;
-use crate::scan::repos::{dir_size_fast, human_bytes};
+use crate::scan::repos::dir_size_fast;
 use crate::scan::{
-    AssetGroup, CleanFailure, CleanPlan, CleanResult, Field, Item, MetricValue, Scanner, Tag, Text,
-    TextArg, field_text, kind_text,
+    AssetGroup, CleanFailure, CleanPlan, CleanResult, DetailRow, Field, Item, MetricValue, Scanner,
+    Tag, Text, TextArg, clean_fail_text, field_text, kind_text,
 };
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap};
@@ -484,17 +484,21 @@ fn aggregate(tools: &[Tool], entries: &[RawEntry]) -> Vec<Item> {
             let tool = &tools[ti];
             let cleanable = tool.allow_clean && cat.cleanable();
 
-            let mut detail: HashMap<String, String> = HashMap::new();
-            // 键名必须前缀化：`Item.detail` 是 HashMap，序列化顺序不确定，
-            // 前端按对象键序直接渲染，不编号的话构成清单会乱序。
-            detail.insert("0. 路径".into(), tool.root.display().to_string());
+            let mut detail = vec![DetailRow::new("path", tool.root.display().to_string())];
             let shown = group.len().min(TOP_DETAIL);
-            for (i, e) in group.iter().take(shown).enumerate() {
-                detail.insert(format!("{}. {}", i + 1, e.name), human_bytes(e.size));
+            for e in group.iter().take(shown) {
+                // 文件名是数据不翻译；体积交给前端按语言格式化
+                detail.push(DetailRow {
+                    label: Text::raw(e.name.clone()),
+                    value: Text::fmt("data.value.bytes").arg("bytes", TextArg::bytes(e.size)),
+                });
             }
-            detail.insert(format!("{}. 条目", shown + 1), group.len().to_string());
+            detail.push(DetailRow::new(
+                "entries",
+                Text::fmt("data.value.count").arg("n", TextArg::num(group.len())),
+            ));
             if !tool.allow_clean {
-                detail.insert(format!("{}. 清理", shown + 2), "仅统计，不开放清理".into());
+                detail.push(DetailRow::new("clean", Text::key("data.value.statsOnly")));
             }
 
             let mut metrics: HashMap<String, MetricValue> = HashMap::new();
@@ -531,7 +535,7 @@ fn aggregate(tools: &[Tool], entries: &[RawEntry]) -> Vec<Item> {
                 path: tool.root.display().to_string(),
                 metrics,
                 kind_label: Some(cat.text()),
-                detail: Some(detail),
+                detail,
                 artifact_entries: vec![],
                 cleanable,
                 reclaimable: if cleanable { Some(size) } else { None },
@@ -595,7 +599,7 @@ impl AiToolsScanner {
         if !plan.confirmed {
             result.failed.push(CleanFailure {
                 id: "*".into(),
-                reason: "未确认".into(),
+                reason: clean_fail_text("unconfirmed"),
             });
             return result;
         }
@@ -604,35 +608,35 @@ impl AiToolsScanner {
             let Some((cat, root)) = parse_ai_id(id) else {
                 result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: "条目 id 不合法".into(),
+                    reason: clean_fail_text("invalidId"),
                 });
                 continue;
             };
             if !cat.cleanable() {
                 result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: format!("{} 类别不开放清理", cat.label()),
+                    reason: Text::fmt("data.cleanFail.categoryLocked").arg("category", cat.text()),
                 });
                 continue;
             }
             if !root.is_absolute() {
                 result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: "不是绝对路径".into(),
+                    reason: clean_fail_text("notAbsolute"),
                 });
                 continue;
             }
             let Some(tool) = self.tools.iter().find(|t| t.root == root) else {
                 result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: "不在 AI 工具扫描白名单内".into(),
+                    reason: clean_fail_text("notInAiWhitelist"),
                 });
                 continue;
             };
             if !tool.allow_clean {
                 result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: "该工具目录仅统计，不开放清理".into(),
+                    reason: clean_fail_text("readOnlyRoot"),
                 });
                 continue;
             }
@@ -641,7 +645,8 @@ impl AiToolsScanner {
             if candidates.is_empty() {
                 result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: format!("没有可清理的{}条目，重扫一次", cat.label()),
+                    reason: Text::fmt("data.cleanFail.noCleanableEntries")
+                        .arg("category", cat.text()),
                 });
                 continue;
             }
@@ -655,7 +660,7 @@ impl AiToolsScanner {
                         all_ok = false;
                         result.failed.push(CleanFailure {
                             id: e.path.display().to_string(),
-                            reason: "是符号链接，跳过".into(),
+                            reason: clean_fail_text("symlinkSkipped"),
                         });
                         continue;
                     }
@@ -664,7 +669,7 @@ impl AiToolsScanner {
                         all_ok = false;
                         result.failed.push(CleanFailure {
                             id: e.path.display().to_string(),
-                            reason: "路径已不存在，跳过".into(),
+                            reason: clean_fail_text("pathMissingSkipped"),
                         });
                         continue;
                     }
@@ -676,7 +681,7 @@ impl AiToolsScanner {
                         all_ok = false;
                         result.failed.push(CleanFailure {
                             id: e.path.display().to_string(),
-                            reason: err.to_string(),
+                            reason: Text::raw(err.to_string()),
                         });
                     }
                 }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { ChevronRight, FolderOpen, Trash2 } from "@lucide/vue";
-import type { AssetGroup, Item } from "@/lib/types";
+import type { AssetGroup, Item, Text } from "@/lib/types";
 import { artifactBytes, groupReclaimable, itemSize, reclaimableOf } from "@/lib/types";
 import { artifactRowsOf, canCleanArtifactsItem, canCleanItem, cell, isBlockerTag, orderedTags, tagHint } from "@/lib/assets";
 import { rowFullName } from "@/lib/rows";
@@ -43,7 +43,7 @@ const inspectorKey = computed(
   () => props.selectedRow?.id ?? `group:${props.group.id}`,
 );
 
-const detailEntries = computed(() => Object.entries(props.selectedRow?.detail ?? {}));
+const detailRows = computed(() => props.selectedRow?.detail ?? []);
 
 const MAX_ARTIFACT_PREVIEW = 12;
 const artifactRows = computed(() =>
@@ -60,9 +60,12 @@ function artifactPath(rel: string): string {
 
 const reclaimTotal = computed(() => groupReclaimable(props.group));
 
-/** detail 的键名带 `N. ` 排序前缀（Rust 侧为保证 HashMap 顺序加的），展示时去掉。 */
-function detailLabel(key: string): string {
-  return key.replace(/^\d+\.\s*/, "");
+/** 明细值统一渲染成文案；路径类的值（Raw 形态且是宿主机路径）另走等宽字体。 */
+function detailText(t: Text): string {
+  return renderText(t);
+}
+function detailIsPath(t: Text): boolean {
+  return t.t === "r" && isLocalPath(t.v);
 }
 </script>
 
@@ -151,16 +154,16 @@ function detailLabel(key: string): string {
         </div>
       </dl>
 
-      <template v-if="detailEntries.length || artifactRows.length">
-        <template v-if="detailEntries.length">
+      <template v-if="detailRows.length || artifactRows.length">
+        <template v-if="detailRows.length">
           <h3 class="mt-4 border-t border-border/60 pt-3 text-[11px] font-medium text-muted-foreground">{{ t("inspector.details") }}</h3>
           <dl class="mt-2 space-y-3">
-            <div v-for="[k, v] in detailEntries" :key="k">
-              <dt class="text-[11px] text-muted-foreground [overflow-wrap:anywhere]">{{ detailLabel(k) }}</dt>
+            <div v-for="r in detailRows" :key="detailText(r.label)">
+              <dt class="text-[11px] text-muted-foreground [overflow-wrap:anywhere]">{{ detailText(r.label) }}</dt>
               <dd
                 class="mt-0.5 whitespace-pre-line text-xs leading-relaxed text-foreground [overflow-wrap:anywhere]"
-                :class="isLocalPath(v) ? 'font-mono text-[11px]' : ''"
-              >{{ v }}</dd>
+                :class="detailIsPath(r.value) ? 'font-mono text-[11px]' : ''"
+              >{{ detailText(r.value) }}</dd>
             </div>
           </dl>
         </template>

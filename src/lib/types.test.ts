@@ -3,6 +3,7 @@ import type { AssetGroup, Item } from "@/lib/types";
 import { applyLocale } from "@/lib/i18n";
 import {
   artifactBytes,
+  detailValueOf,
   formatAgo,
   formatBytes,
   formatBytesParts,
@@ -30,11 +31,14 @@ const item = (over: Partial<Item> = {}): Item => ({
 });
 
 describe("metricValue / itemSize / artifactBytes / reclaimableOf —— 取值口径", () => {
-  it("metricValue 取裸值，四种标签各一行", () => {
+  it("metricValue 取裸值，五种标签各一行；f 没有裸值，渲染成文案", () => {
     expect(metricValue({ t: "s", v: "main" })).toBe("main");
     expect(metricValue({ t: "b", v: 1 })).toBe(1);
     expect(metricValue({ t: "i", v: 2 })).toBe(2);
     expect(metricValue({ t: "z", v: true })).toBe(true);
+    expect(
+      metricValue({ t: "f", v: { k: "data.value.dirtyFiles", a: { n: { t: "n", v: 3 } } } }),
+    ).toBe("3 处改动");
   });
 
   it("itemSize 认 b|i；类型不对或缺失算 0（WSL1「没有」与「0 字节」同形，是既有取舍）", () => {
@@ -56,6 +60,30 @@ describe("metricValue / itemSize / artifactBytes / reclaimableOf —— 取值�
     expect(reclaimableOf(item({ metrics: { reclaimable: { t: "b", v: 3 } } }))).toBe(3);
     expect(reclaimableOf(item({ metrics: { reclaimable: { t: "s", v: "3" } } }))).toBe(0);
     expect(reclaimableOf(item())).toBe(0);
+  });
+
+  it("formatMetric 的 f 形态按当前语言渲染（带参文案），k 形态查表", () => {
+    expect(
+      formatMetric({ t: "f", v: { k: "data.value.dirtyFiles", a: { n: { t: "n", v: 3 } } } }),
+    ).toBe("3 处改动");
+    expect(formatMetric({ t: "k", v: "data.value.clean" })).toBe("干净");
+  });
+
+  it("detailValueOf 按 label 键寻行（清理弹窗找 data.detail.note），找不到返回 undefined", () => {
+    const it = item({
+      detail: [
+        { label: { t: "k", v: "data.detail.path" }, value: { t: "r", v: "/tmp/repo-a" } },
+        { label: { t: "k", v: "data.detail.note" }, value: { t: "k", v: "data.toolchainNote.pnpmStore" } },
+      ],
+    });
+    expect(detailValueOf(it, "data.detail.note")).toEqual({
+      t: "k",
+      v: "data.toolchainNote.pnpmStore",
+    });
+    expect(detailValueOf(it, "data.detail.missing")).toBeUndefined();
+    expect(detailValueOf(null, "data.detail.note")).toBeUndefined();
+    // 动态行（label 是 Raw 文件名）不会被键匹配误伤
+    expect(detailValueOf(item({ detail: [{ label: { t: "r", v: "x.log" }, value: { t: "r", v: "1 KB" } }] }), "x.log")).toBeUndefined();
   });
 
   it("groupSize 全加；groupReclaimable 只加 cleanable 行（与 Rust total_reclaimable 同口径）", () => {

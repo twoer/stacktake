@@ -85,8 +85,8 @@
 use crate::scan::platform::Platform;
 use crate::scan::repos::{dir_sizes_batch, lookup_size, mtime_secs};
 use crate::scan::{
-    AssetGroup, CleanFailure, CleanPlan, CleanResult, Field, Item, MetricValue, Scanner, Tag, Text,
-    TextArg, field_text, kind_text,
+    AssetGroup, CleanFailure, CleanPlan, CleanResult, DetailRow, Field, Item, MetricValue, Scanner,
+    Tag, Text, TextArg, clean_fail_text, field_text, kind_text,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -151,7 +151,7 @@ fn version_managers() -> Vec<VersionManager> {
             // Windows 上的 nvm 是另一个实现（coreybutler/nvm-windows），
             // NVM_HOME 默认 %APPDATA%\nvm，版本目录直接在它下面 ✔
             win_rels: &["AppData/Roaming/nvm"],
-            note: "逐个版本目录。用 `nvm uninstall <版本>` 卸——直接删目录会让 nvm 的版本列表和 alias 残留",
+            note: "nvmVersions",
         },
         VersionManager {
             section: "fnm",
@@ -161,7 +161,7 @@ fn version_managers() -> Vec<VersionManager> {
             mac_rels: &[".local/share/fnm/node-versions", ".fnm/node-versions"],
             // fnm 官方文档：Windows 默认 %LOCALAPPDATA%\fnm ✔
             win_rels: &["AppData/Local/fnm/node-versions"],
-            note: "逐个版本目录。用 `fnm uninstall <版本>` 卸",
+            note: "fnmVersions",
         },
         VersionManager {
             section: "volta",
@@ -178,7 +178,7 @@ fn version_managers() -> Vec<VersionManager> {
                 "AppData/Local/volta/tools/image/python",
                 "AppData/Local/volta/tools/image/ruby",
             ],
-            note: "逐个版本目录。用 `volta uninstall node@<版本>` 卸",
+            note: "voltaVersions",
         },
         VersionManager {
             section: "pyenv",
@@ -186,7 +186,7 @@ fn version_managers() -> Vec<VersionManager> {
             mac_rels: &[".pyenv/versions"],
             // pyenv-win（Windows 的实现）同样落在 ~/.pyenv ✔
             win_rels: &[".pyenv/versions"],
-            note: "逐个版本目录。用 `pyenv uninstall <版本>` 卸",
+            note: "pyenvVersions",
         },
         VersionManager {
             section: "conda",
@@ -195,14 +195,14 @@ fn version_managers() -> Vec<VersionManager> {
             // ~/miniconda3，Anaconda 发行版 ~/anaconda3，手动装 ~/conda。
             mac_rels: &["miniconda3/envs", "anaconda3/envs", "conda/envs"],
             win_rels: &["miniconda3/envs", "anaconda3/envs", "conda/envs"],
-            note: "每个子目录是一个 conda 环境。用 `conda env remove -n <名字>` 卸",
+            note: "condaEnvs",
         },
         VersionManager {
             section: "rbenv",
             _manager: "rbenv",
             mac_rels: &[".rbenv/versions"],
             win_rels: &[".rbenv/versions"],
-            note: "逐个版本目录。用 `rbenv uninstall <版本>` 卸",
+            note: "rbenvVersions",
         },
         VersionManager {
             section: "asdf",
@@ -222,7 +222,7 @@ fn version_managers() -> Vec<VersionManager> {
                 ".asdf/installs/ruby",
                 ".asdf/installs/golang",
             ],
-            note: "逐个版本目录。用 `asdf uninstall <语言> <版本>` 卸",
+            note: "asdfVersions",
         },
     ]
 }
@@ -277,6 +277,26 @@ fn cache_is_cleanable(src: &CacheSource) -> bool {
 
 /// 已安装产物的类别名。测试与汇总都按这个串判定「不可回收」。
 const KIND_INSTALLED: &str = "已安装";
+
+/// 白名单 `note` 列存的是键 slug，散文在 `data.toolchainNote.*`——表里只放身份，
+/// 给人看的句子随语言切换。
+fn note_text(slug: &str) -> Text {
+    Text::key(format!("data.toolchainNote.{slug}"))
+}
+
+/// detail「清理方式」分三档说（S3 起）：本工具能删 / 该用它自己的命令 / 两者都不行。
+/// 中间那档是「有官方命令但本工具不代跑」——命令要指给人，不能只写「直接删除目录」，
+/// 否则用户会以为搬走目录等价于官方清理（pnpm store 会因此要完整重建，见
+/// `cache_is_cleanable` 的注释）。
+fn clean_how(src: &CacheSource) -> Text {
+    if cache_is_cleanable(src) {
+        Text::key("data.value.cleanByTrash")
+    } else if !src.cmd.is_empty() {
+        Text::fmt("data.value.cleanByCommand").arg("cmd", src.cmd)
+    } else {
+        Text::key("data.value.notCleanable")
+    }
+}
 
 /// 分节标题的展示名。`section` 本身是筛选与 `group_key` 的稳定取值，
 /// 这里只决定怎么显示——品牌名（nvm / Rust / .NET…）不翻译。
@@ -432,7 +452,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".npm",
             cache: true,
             cmd: "npm cache clean --force",
-            note: "该命令清 _cacache；_npx 等子目录可直接删除，下次使用重新下载",
+            note: "npmCache",
             list_children: false,
         },
         CacheSource {
@@ -442,7 +462,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".nvm/.cache",
             cache: true,
             cmd: "",
-            note: "nvm 下载的 node tar.xz 暂存，装完即是残留；已装版本在 versions/ 下，与这里无关",
+            note: "nvmDownloads",
             list_children: false,
         },
         CacheSource {
@@ -452,7 +472,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/pnpm/store",
             cache: true,
             cmd: "pnpm store prune",
-            note: "prune 只移除没有被任何项目引用的包；整个 store 删除也安全，按需重建",
+            note: "pnpmStore",
             list_children: false,
         },
         CacheSource {
@@ -462,7 +482,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/pnpm/nodejs",
             cache: false,
             cmd: "",
-            note: "pnpm 自行管理的 Node 二进制，删了依赖它的命令不可用",
+            note: "pnpmNode",
             list_children: false,
         },
         CacheSource {
@@ -472,7 +492,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".bun/install/cache",
             cache: true,
             cmd: "",
-            note: "删除后按需重新下载",
+            note: "redownloadOnDemand",
             list_children: false,
         },
         CacheSource {
@@ -482,7 +502,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Caches/node-gyp",
             cache: true,
             cmd: "",
-            note: "各版本 Node 的头文件，编译原生插件时按版本下载",
+            note: "nodeGyp",
             list_children: false,
         },
         CacheSource {
@@ -492,7 +512,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Caches/ms-playwright",
             cache: true,
             cmd: "",
-            note: "多版本并存是不同项目按需下载的结果，删除后对应项目下次运行重新下载",
+            note: "playwright",
             list_children: false,
         },
         CacheSource {
@@ -502,7 +522,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".cache/puppeteer",
             cache: true,
             cmd: "",
-            note: "删除后按需重新下载",
+            note: "redownloadOnDemand",
             list_children: false,
         },
         CacheSource {
@@ -512,7 +532,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Caches/Cypress",
             cache: true,
             cmd: "",
-            note: "删除后下次运行重新下载",
+            note: "cypress",
             list_children: false,
         },
         CacheSource {
@@ -522,7 +542,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Caches/electron",
             cache: true,
             cmd: "",
-            note: "打包用的 Electron zip，删除后重新下载",
+            note: "electron",
             list_children: false,
         },
         CacheSource {
@@ -532,7 +552,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".cache/electron",
             cache: true,
             cmd: "",
-            note: "部分工具按 XDG 规范另存的一份，与 Library/Caches/electron 同源",
+            note: "electronXdg",
             list_children: false,
         },
         CacheSource {
@@ -542,7 +562,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Caches/electron-builder",
             cache: true,
             cmd: "",
-            note: "dmg / nsis / wine 等打包辅助工具，删除后重新下载",
+            note: "electronBuilder",
             list_children: false,
         },
         CacheSource {
@@ -552,7 +572,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Caches/typescript",
             cache: true,
             cmd: "",
-            note: "编辑器按版本下载的 tsserver，删除后重新下载",
+            note: "typescript",
             list_children: false,
         },
         CacheSource {
@@ -562,7 +582,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Caches/Yarn",
             cache: true,
             cmd: "yarn cache clean",
-            note: "Yarn 1 的全局缓存目录",
+            note: "yarn",
             list_children: false,
         },
         // ---- Python ----
@@ -573,7 +593,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".cache/uv",
             cache: true,
             cmd: "uv cache clean",
-            note: "下载的 wheel 与解包缓存",
+            note: "uv",
             list_children: false,
         },
         CacheSource {
@@ -583,7 +603,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Caches/pip",
             cache: true,
             cmd: "pip cache purge",
-            note: "HTTP 缓存与 wheel",
+            note: "pip",
             list_children: false,
         },
         // ---- Rust ----
@@ -594,7 +614,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".rustup/toolchains",
             cache: false,
             cmd: "",
-            note: "已安装的工具链版本，装几个是主动选择，同 JDK 口径",
+            note: "rustupToolchains",
             list_children: false,
         },
         CacheSource {
@@ -604,7 +624,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".rustup/downloads",
             cache: true,
             cmd: "",
-            note: "安装过程的暂存文件，装完即是残留",
+            note: "rustupDownloads",
             list_children: false,
         },
         CacheSource {
@@ -614,7 +634,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".cargo/registry",
             cache: true,
             cmd: "",
-            note: "crates.io 索引与包缓存；无官方 prune 命令，可直接删除，下次构建重新下载",
+            note: "cargoRegistry",
             list_children: false,
         },
         CacheSource {
@@ -624,7 +644,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".cargo/git",
             cache: true,
             cmd: "",
-            note: "git 依赖的检出缓存，删除后重新克隆",
+            note: "cargoGit",
             list_children: false,
         },
         CacheSource {
@@ -634,7 +654,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".cargo/bin",
             cache: false,
             cmd: "",
-            note: "cargo install 装的二进制，删了命令就没了",
+            note: "cargoBin",
             list_children: false,
         },
         // ---- Go ----
@@ -645,7 +665,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "go/pkg/mod",
             cache: true,
             cmd: "go clean -modcache",
-            note: "下载的模块源码",
+            note: "goMod",
             list_children: false,
         },
         CacheSource {
@@ -655,7 +675,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".cache/go-build",
             cache: true,
             cmd: "go clean -cache",
-            note: "编译中间产物，删除后重新编译，耗时但不丢数据",
+            note: "goBuild",
             list_children: false,
         },
         CacheSource {
@@ -665,7 +685,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "go/bin",
             cache: false,
             cmd: "",
-            note: "go install 装的二进制，删了命令就没了",
+            note: "goBin",
             list_children: false,
         },
         // ---- Homebrew ----
@@ -676,7 +696,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Caches/Homebrew",
             cache: true,
             cmd: "brew cleanup --prune=all",
-            note: "bottle 与 API 缓存；Backup 子目录是旧版本备份，cleanup 会一并处理",
+            note: "homebrew",
             list_children: false,
         },
         // ---- AI 运行时 ----
@@ -687,7 +707,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".cache/codex-runtimes",
             cache: true,
             cmd: "",
-            note: "按版本下载的运行时，删除后重新下载",
+            note: "versionedRuntime",
             list_children: false,
         },
         CacheSource {
@@ -697,7 +717,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".cache/acode-runtimes",
             cache: true,
             cmd: "",
-            note: "按版本下载的运行时，删除后重新下载",
+            note: "versionedRuntime",
             list_children: false,
         },
         // ---- 其它 ----
@@ -708,7 +728,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".cache/vcpkg",
             cache: true,
             cmd: "",
-            note: "删除后相关包重新编译，耗时但不丢数据",
+            note: "vcpkg",
             list_children: false,
         },
         CacheSource {
@@ -718,7 +738,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".cache/prisma",
             cache: true,
             cmd: "",
-            note: "下载的查询引擎，删除后重新下载",
+            note: "prisma",
             list_children: false,
         },
         CacheSource {
@@ -735,7 +755,7 @@ fn sources() -> Vec<CacheSource> {
             cache: true,
             // 官方文档：deno clean 清整个 DENO_DIR，里面全部可重新拉取或重新生成
             cmd: "deno clean",
-            note: "远程模块与编译产物，按需重新下载。注意 DENO_DIR 里还有 kv / webstorage 这类应用数据，删之前先确认没在用",
+            note: "deno",
             list_children: false,
         },
         // ---- G4：语言缓存补齐 ----
@@ -750,7 +770,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".nuget/packages",
             cache: true,
             cmd: "dotnet nuget locals global-packages --clear",
-            note: "按包 id + 版本展开存放，所有项目共享。删掉后各项目重新 restore 下载；NUGET_PACKAGES 环境变量可改这个位置",
+            note: "nugetPackages",
             list_children: false,
         },
         CacheSource {
@@ -762,7 +782,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".local/share/NuGet/v3-cache",
             cache: true,
             cmd: "dotnet nuget locals http-cache --clear",
-            note: "未展开的原始下载（.dat），有 30 分钟过期时间",
+            note: "nugetHttp",
             list_children: false,
         },
         CacheSource {
@@ -775,7 +795,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Caches/composer",
             cache: true,
             cmd: "composer clear-cache",
-            note: "下载的 zip（files）、仓库元信息（repo）、VCS 检出（vcs）。项目里的 vendor/ 不在这个目录下",
+            note: "composer",
             list_children: false,
         },
         CacheSource {
@@ -789,7 +809,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Caches/Coursier",
             cache: true,
             cmd: "",
-            note: "Scala / sbt 用的构件缓存，按 URL 组织。v1 子目录是版本号",
+            note: "coursier",
             list_children: false,
         },
         CacheSource {
@@ -799,7 +819,7 @@ fn sources() -> Vec<CacheSource> {
             rel: ".coursier/cache",
             cache: true,
             cmd: "",
-            note: "2017 年 10 月之前的 coursier 默认位置。机器上第一个跑过的 coursier 版本决定实际用哪个，新旧两个目录都在说明曾经用过老版本",
+            note: "coursierLegacy",
             list_children: false,
         },
         CacheSource {
@@ -812,7 +832,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Caches/org.swift.swiftpm",
             cache: true,
             cmd: "swift package purge-cache",
-            note: "依赖检出与仓库缓存，重新解析会重新下载。Xcode 工程内的 SourcePackages 在 DerivedData 下，不在这里",
+            note: "swiftpm",
             list_children: false,
         },
         CacheSource {
@@ -822,7 +842,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Caches/CocoaPods",
             cache: true,
             cmd: "pod cache clean --all",
-            note: "下载的 pod；重新 pod install 会再拉。**刻意不扫 ~/.cocoapods/repos**——那是 spec 仓库，pod repo update 才能恢复，代价与其它条目不同",
+            note: "cocoapods",
             list_children: false,
         },
         // ---- Xcode 系（P1）：Xcode 与模拟器只在 macOS。竞品依据：DevCleaner for
@@ -835,7 +855,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Developer/Xcode/DerivedData",
             cache: true,
             cmd: "",
-            note: "每个子目录是一个项目的构建索引与中间产物，删了下次构建重建；有进行中的构建时先等完成",
+            note: "derivedData",
             list_children: true,
         },
         CacheSource {
@@ -845,7 +865,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Developer/Xcode/iOS DeviceSupport",
             cache: true,
             cmd: "",
-            note: "连接对应版本真机时从设备提取的系统符号，按 iOS 版本成行；删了下次连接该版本设备时重新生成",
+            note: "deviceSupport",
             list_children: true,
         },
         CacheSource {
@@ -855,7 +875,7 @@ fn sources() -> Vec<CacheSource> {
             rel: "Library/Developer/Xcode/Archives",
             cache: false,
             cmd: "",
-            note: "上传 App Store 的打包归档（含 dSYM 符号），删了丢历史归档——是产物不是缓存，永不计入可回收",
+            note: "xcodeArchives",
             list_children: false,
         },
         CacheSource {
@@ -867,7 +887,7 @@ fn sources() -> Vec<CacheSource> {
             // 有官方命令 → 不标 cleanable（S3 口径）：simctl 按运行时 ID 精确删除
             // 并正确注销，比搬走整个目录干净
             cmd: "xcrun simctl runtime delete <运行时ID>",
-            note: "下载的模拟器运行时，按版本成行；删了要用 Xcode 重新下载——官方命令按运行时 ID 精确删除，本工具不代跑",
+            note: "simulatorRuntimes",
             list_children: true,
         },
     ]
@@ -969,7 +989,7 @@ impl ToolchainScanner {
         if !plan.confirmed {
             result.failed.push(CleanFailure {
                 id: "*".into(),
-                reason: "未确认".into(),
+                reason: clean_fail_text("unconfirmed"),
             });
             return result;
         }
@@ -978,7 +998,7 @@ impl ToolchainScanner {
             let Some(path) = parse_cache_id(id) else {
                 result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: "条目 id 不合法".into(),
+                    reason: clean_fail_text("invalidId"),
                 });
                 continue;
             };
@@ -1005,7 +1025,7 @@ impl ToolchainScanner {
                 }
                 Err(e) => result.failed.push(CleanFailure {
                     id: id.clone(),
-                    reason: e.to_string(),
+                    reason: Text::raw(e.to_string()),
                 }),
             }
         }
@@ -1027,15 +1047,19 @@ impl ToolchainScanner {
 /// - 都没命中 → 「不在缓存白名单内」。
 enum CleanVerdict {
     Allow,
-    Deny(String),
+    Deny(Text),
 }
 
 fn clean_verdict(home: &Path, platform: Platform, path: &Path) -> CleanVerdict {
     let deny_uncleanable = |src: &CacheSource| {
         if src.cmd.is_empty() {
-            format!("{}（{}）不提供清理入口", src.short, src.kind)
+            Text::fmt("data.cleanFail.noCleanEntry")
+                .arg("short", short_text(src.short))
+                .arg("kind", kind_text(src.kind))
         } else {
-            format!("{} 有官方清理命令，请自己运行：{}", src.short, src.cmd)
+            Text::fmt("data.cleanFail.officialCommand")
+                .arg("short", short_text(src.short))
+                .arg("cmd", src.cmd)
         }
     };
 
@@ -1049,10 +1073,9 @@ fn clean_verdict(home: &Path, platform: Platform, path: &Path) -> CleanVerdict {
         return if !cache_is_cleanable(src) {
             CleanVerdict::Deny(deny_uncleanable(src))
         } else if src.list_children {
-            CleanVerdict::Deny(format!(
-                "{} 按子目录逐项清理（账面即按子目录成行），不提供整目录删除入口",
-                src.short
-            ))
+            CleanVerdict::Deny(
+                Text::fmt("data.cleanFail.perChildOnly").arg("short", short_text(src.short)),
+            )
         } else {
             CleanVerdict::Allow
         };
@@ -1069,7 +1092,7 @@ fn clean_verdict(home: &Path, platform: Platform, path: &Path) -> CleanVerdict {
         };
     }
 
-    CleanVerdict::Deny("不在缓存白名单内".into())
+    CleanVerdict::Deny(clean_fail_text("notInCacheWhitelist"))
 }
 
 /// `Item.id` → 路径。**去掉 `toolchain:` 前缀**，剩下的才是路径。
@@ -1142,11 +1165,12 @@ fn version_item(vm: &VersionManager, dir: &Path, size: u64, mtime: Option<i64>) 
     // kind 用既有分类串，前端「类别」维度与口径测试都认这一套
     metrics.insert("kind".into(), MetricValue::text(KIND_INSTALLED));
 
-    let mut detail: HashMap<String, String> = HashMap::new();
-    detail.insert("0. 路径".into(), dir.display().to_string());
-    detail.insert("1. 版本管理器".into(), vm.section.into());
-    detail.insert("2. 类别".into(), KIND_INSTALLED.into());
-    detail.insert("3. 说明".into(), vm.note.into());
+    let detail = vec![
+        DetailRow::new("path", dir.display().to_string()),
+        DetailRow::new("manager", vm.section),
+        DetailRow::new("kind", kind_text(KIND_INSTALLED)),
+        DetailRow::new("note", note_text(vm.note)),
+    ];
 
     Item {
         id: format!("toolchain:version:{}", dir.display()),
@@ -1161,7 +1185,7 @@ fn version_item(vm: &VersionManager, dir: &Path, size: u64, mtime: Option<i64>) 
         path: dir.display().to_string(),
         metrics,
         kind_label: Some(kind_text(KIND_INSTALLED)),
-        detail: Some(detail),
+        detail,
         artifact_entries: vec![],
         cleanable: false,
         reclaimable: None,
@@ -1212,20 +1236,17 @@ fn child_item(src: &CacheSource, dir: &Path, size: u64, mtime: Option<i64>) -> I
 
     let cleanable = cache_is_cleanable(src);
 
-    let mut detail: HashMap<String, String> = HashMap::new();
-    detail.insert("0. 路径".into(), dir.display().to_string());
-    detail.insert("1. 类别".into(), format!("{}（{}）", src.kind, src.short));
-    detail.insert(
-        "2. 清理方式".into(),
-        if cleanable {
-            "直接删除目录（移入废纸篓）".into()
-        } else if !src.cmd.is_empty() {
-            format!("用官方命令清理：{}", src.cmd)
-        } else {
-            "不可清理".into()
-        },
-    );
-    detail.insert("3. 说明".into(), src.note.into());
+    let detail = vec![
+        DetailRow::new("path", dir.display().to_string()),
+        DetailRow::new(
+            "kind",
+            Text::fmt("data.value.kindOfSource")
+                .arg("kind", kind_text(src.kind))
+                .arg("short", short_text(src.short)),
+        ),
+        DetailRow::new("cleanHow", clean_how(src)),
+        DetailRow::new("note", note_text(src.note)),
+    ];
 
     Item {
         id: format!("toolchain:{}", dir.display()),
@@ -1242,7 +1263,7 @@ fn child_item(src: &CacheSource, dir: &Path, size: u64, mtime: Option<i64>) -> I
         path: dir.display().to_string(),
         metrics,
         kind_label: Some(kind_text(src.kind)),
-        detail: Some(detail),
+        detail,
         artifact_entries: vec![],
         cleanable,
         reclaimable: if cleanable { Some(size) } else { None },
@@ -1387,25 +1408,12 @@ fn source_item(src: &CacheSource, path: &Path, size: u64, mtime: Option<i64>) ->
 
     let cleanable = cache_is_cleanable(src);
 
-    // detail 是 HashMap，键序不确定，靠编号前缀保证前端渲染顺序（前端会剥掉前缀）
-    let mut detail: HashMap<String, String> = HashMap::new();
-    detail.insert("0. 路径".into(), path.display().to_string());
-    detail.insert("1. 类别".into(), src.kind.into());
-    // 清理方式分三档说（S3 起）：本工具能删 / 该用它自己的命令 / 两者都不行。
-    // 中间那档是「有官方命令但本工具不代跑」——命令要指给人，不能只写
-    // 「直接删除目录」，否则用户会以为搬走目录等价于官方清理（pnpm store
-    // 会因此要完整重建，见 cache_is_cleanable 的注释）。
-    detail.insert(
-        "2. 清理方式".into(),
-        if cleanable {
-            "直接删除目录（移入废纸篓）".into()
-        } else if !src.cmd.is_empty() {
-            format!("用官方命令清理：{}", src.cmd)
-        } else {
-            "不可清理".into()
-        },
-    );
-    detail.insert("3. 说明".into(), src.note.into());
+    let detail = vec![
+        DetailRow::new("path", path.display().to_string()),
+        DetailRow::new("kind", kind_text(src.kind)),
+        DetailRow::new("cleanHow", clean_how(src)),
+        DetailRow::new("note", note_text(src.note)),
+    ];
 
     Item {
         id: format!("toolchain:{}", path.display()),
@@ -1422,7 +1430,7 @@ fn source_item(src: &CacheSource, path: &Path, size: u64, mtime: Option<i64>) ->
         path: path.display().to_string(),
         metrics,
         kind_label: Some(kind_text(src.kind)),
-        detail: Some(detail),
+        detail,
         artifact_entries: vec![],
         cleanable,
         reclaimable: if cleanable { Some(size) } else { None },
@@ -1498,6 +1506,17 @@ pub(crate) fn cleanable_and_cmd_for_test() -> Vec<(String, bool, &'static str)> 
         .collect()
 }
 
+/// 两张白名单里全部 `note` 键（已拼成 `data.toolchainNote.*`）。五语门禁按表遍历，
+/// 新增条目忘了补译文就红——不靠手抄清单。
+#[cfg(test)]
+pub(crate) fn note_keys_for_test() -> Vec<Text> {
+    sources()
+        .iter()
+        .map(|s| note_text(s.note))
+        .chain(version_managers().iter().map(|vm| note_text(vm.note)))
+        .collect()
+}
+
 /// `parse_cache_id` 的测试出口。**它是 `clean_cache` 唯一的入参校验**，
 /// 错一个字符的后果是把 `toolchain:` 当成路径的一部分去删东西。
 #[cfg(test)]
@@ -1508,7 +1527,7 @@ pub(crate) fn parse_cache_id_for_test(id: &str) -> Option<PathBuf> {
 /// `clean_verdict` 的测试出口：`Allow` → `Ok(())`，`Deny(reason)` → `Err(reason)`。
 /// 喂假 home 就能断言「哪类路径放行、哪类拒绝、拒绝理由是什么」。
 #[cfg(test)]
-pub(crate) fn clean_verdict_for_test(home: &Path, p: Platform, path: &Path) -> Result<(), String> {
+pub(crate) fn clean_verdict_for_test(home: &Path, p: Platform, path: &Path) -> Result<(), Text> {
     match clean_verdict(home, p, path) {
         CleanVerdict::Allow => Ok(()),
         CleanVerdict::Deny(reason) => Err(reason),

@@ -297,11 +297,15 @@ async function applyCleanResult(r: CleanResult, labels?: ReadonlyMap<string, str
   }
   // id = "*" 是整个计划被拒（如未确认），其余是单项失败（复核不通过/废纸篓出错）。
   // 批量时逐项报失败；有 labels 就把 id 翻成行名（toolchain id 带前缀，路径也长）。
+  // reason 是 Text（P2b 起）：固定文案是键，废纸篓的系统错误是原文。
   for (const f of r.failed) {
     toast.error(
       f.id === "*"
-        ? f.reason
-        : t("assets.failureItem", { name: labels?.get(f.id) ?? f.id, reason: f.reason }),
+        ? renderText(f.reason)
+        : t("assets.failureItem", {
+            name: labels?.get(f.id) ?? f.id,
+            reason: renderText(f.reason),
+          }),
     );
   }
   if (r.succeeded.length === 0) return;

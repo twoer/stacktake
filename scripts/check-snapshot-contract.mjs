@@ -20,7 +20,7 @@ import { readFileSync } from 'node:fs'
 const TEXT_TAGS = new Set(['r', 'k', 'f'])
 const TEXT_ARG_TAGS = new Set(['r', 'k', 'f', 'n', 'b'])
 // 'k' = `MetricValue::TextKey`：指标格里的界面文案（「未知」「无提交」），存键不存成品。
-const METRIC_TAGS = new Set(['s', 'b', 'i', 'z', 'k'])
+const METRIC_TAGS = new Set(['s', 'b', 'i', 'z', 'k', 'f'])
 const MAX_FIELDS = 3
 
 /** 递归验 `Text`；`where` 已经带上槽位名。 */
@@ -95,7 +95,7 @@ function checkMetricValue(v, where, problems) {
     return
   }
   if (!METRIC_TAGS.has(v.t)) {
-    problems.push(`${where}: 未知类型标签 t=${JSON.stringify(v.t)}（合法：s/b/i/z/k）`)
+    problems.push(`${where}: 未知类型标签 t=${JSON.stringify(v.t)}（合法：s/b/i/z/k/f）`)
     return
   }
   const t = typeof v.v
@@ -103,7 +103,13 @@ function checkMetricValue(v, where, problems) {
     (v.t === 's' && t === 'string') ||
     (v.t === 'k' && t === 'string' && v.v.length > 0) ||
     (v.t === 'z' && t === 'boolean') ||
-    ((v.t === 'b' || v.t === 'i') && t === 'number' && Number.isFinite(v.v))
+    ((v.t === 'b' || v.t === 'i') && t === 'number' && Number.isFinite(v.v)) ||
+    (v.t === 'f' &&
+      v.v !== null &&
+      t === 'object' &&
+      !Array.isArray(v.v) &&
+      typeof v.v.k === 'string' &&
+      v.v.k.length > 0)
   if (!typeOk) {
     // 键位空串单独说一句：它类型没错，但界面会印出一个空指标格
     problems.push(
@@ -168,15 +174,19 @@ function checkItem(item, groupId, problems, warnings) {
     }
   }
 
+  // P2b：明细是有序行数组，label / value 都是 Text（此前是 string→string 映射）
   if (item.detail !== undefined && item.detail !== null) {
-    if (typeof item.detail !== 'object' || Array.isArray(item.detail)) {
-      problems.push(`${where}: detail 不是对象`)
+    if (!Array.isArray(item.detail)) {
+      problems.push(`${where}: detail 不是数组`)
     } else {
-      for (const [k, v] of Object.entries(item.detail)) {
-        if (!k || typeof v !== 'string') {
-          problems.push(`${where}: detail[${JSON.stringify(k)}] 不是字符串`)
+      item.detail.forEach((row, i) => {
+        if (!row || typeof row !== 'object' || Array.isArray(row)) {
+          problems.push(`${where}: detail[${i}] 不是对象`)
+          return
         }
-      }
+        checkText(row.label, `${where}.detail[${i}].label`, problems)
+        checkText(row.value, `${where}.detail[${i}].value`, problems)
+      })
     }
   }
 
@@ -357,7 +367,19 @@ function selfTest() {
     path: '/tmp/a',
     label: { t: 'k', v: 'data.item.cargoRegistry' },
     tags: [{ key: 'cleanable', label: { t: 'k', v: 'data.tag.cleanable' } }],
-    metrics: { size: { t: 'b', v: 100 }, last_commit: { t: 'i', v: 1700000000 }, branch: { t: 'k', v: 'data.value.noCommit' } },
+    metrics: {
+      size: { t: 'b', v: 100 },
+      last_commit: { t: 'i', v: 1700000000 },
+      branch: { t: 'k', v: 'data.value.noCommit' },
+      dirty: { t: 'f', v: { k: 'data.value.dirtyFiles', a: { n: { t: 'n', v: 2 } } } },
+    },
+    detail: [
+      { label: { t: 'k', v: 'data.detail.path' }, value: { t: 'r', v: '/tmp/a' } },
+      {
+        label: { t: 'k', v: 'data.detail.cleanHow' },
+        value: { t: 'f', v: { k: 'data.value.cleanByCommand', a: { cmd: { t: 'r', v: 'npm cache clean --force' } } } },
+      },
+    ],
     cleanable: true,
     reclaimable: 50,
   }
@@ -410,7 +432,10 @@ function selfTest() {
     ['有回收量未标 cleanable', { ...good, items: [{ ...goodItem, cleanable: false }] }],
     ['分节前缀为空', { ...good, items: [{ ...goodItem, name: ' · a' }] }],
     ['出错却有明细', { ...good, error: { t: 'r', v: 'docker 未运行' } }],
-    ['detail 值不是字符串', { ...good, items: [{ ...goodItem, detail: { 清理方式: 42 } }] }],
+    ['detail 不是数组（旧映射形状）', { ...good, items: [{ ...goodItem, detail: { 清理方式: 'npm cache clean --force' } }] }],
+    ['detail 行缺 label', { ...good, items: [{ ...goodItem, detail: [{ value: { t: 'r', v: 'x' } }] }] }],
+    ['detail 值不是 Text', { ...good, items: [{ ...goodItem, detail: [{ label: { t: 'k', v: 'data.detail.path' }, value: 'x' }] }] }],
+    ['指标 f 与对象不符', { ...good, items: [{ ...goodItem, metrics: { dirty: { t: 'f', v: '3 处' } } }] }],
     ['条目缺 name', { ...good, items: [{ ...goodItem, name: '' }] }],
     ['空指标键', { ...good, items: [{ ...goodItem, metrics: { '': { t: 'b', v: 1 } } }] }],
     ['顶层不是数组', { nope: true }],

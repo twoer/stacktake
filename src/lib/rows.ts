@@ -10,6 +10,7 @@
  */
 import type { AssetGroup, Item, Tag } from "@/lib/types";
 import {
+  formatMetric,
   groupReclaimable,
   groupSize,
   itemLabelOf,
@@ -147,6 +148,8 @@ export function sortValue(it: Item, key: string): number | string {
   if (!m) return "";
   if (m.t === "i" || m.t === "b") return m.v;
   if (m.t === "z") return m.v ? 1 : 0;
+  // k / f 是文案形态：按渲染后的文案排（按键名字母排序毫无意义，f 的 v 是对象）
+  if (m.t === "k" || m.t === "f") return formatMetric(m);
   return m.v;
 }
 

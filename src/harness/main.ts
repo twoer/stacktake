@@ -27,6 +27,7 @@ import type {
   Tag,
   Text,
   TextArg,
+  DetailRow,
 } from "@/lib/types";
 import "@/style.css";
 
@@ -75,6 +76,12 @@ const barg = (v: number): TextArg => ({ t: "b", v });
 
 /** 标签：`key` 是稳定取值（筛选 / 抑制 / 阻断判据读它），展示名走 `data.tag.*`。 */
 const tg = (key: string): Tag => ({ key, label: ktxt(`data.tag.${key}`) });
+
+/** 明细行：label 走 `data.detail.<key>`，值三种 Text 形态都可以（P2b 契约）。 */
+const drow = (key: string, value: Text): DetailRow => ({
+  label: ktxt(`data.detail.${key}`),
+  value,
+});
 
 /** 字段标签的键与后端 `field_text` 同源：key 是指标名，label 键是驼峰。 */
 const FIELD_LABEL_KEY: Record<string, string> = {
@@ -146,11 +153,19 @@ const reposItems: Item[] = [
         { relative_path: "apps/desktop/.output/server/node_modules", size_bytes: 64.1 * MB },
         { relative_path: "dist", size_bytes: 58 * MB },
       ],
-      detail: {
-        "1. 未推送": "无",
-        "2. 工作区": "干净",
-        "3. 说明": "构建产物目录 3 个，可单独清理（源码与 .git 保留）",
-      },
+      detail: [
+        drow("path", rtxt("X:\\dev\\fixtures\\repo-a")),
+        drow("remote", ktxt("data.value.none")),
+        drow("lastCommit", rtxt("feat: fixture commit")),
+        drow(
+          "artifacts",
+          ftxt("data.value.artifactSummary", {
+            bytes: barg(1.28 * GB + 64.1 * MB + 58 * MB),
+            dirs: narg(3),
+            list: rtxt("node_modules, apps/desktop/.output/server/node_modules, dist"),
+          }),
+        ),
+      ],
     }),
   item({
       id: "X:\\dev\\fixtures\\repo-b",
@@ -246,7 +261,11 @@ const toolchainItems: Item[] = [
       metrics: { size: bytes(6.2 * GB), last_modified: count(ago(1)), kind: text("下载缓存") },
       cleanable: true,
       reclaimable: 6.2 * GB,
-      detail: { "1. 位置": `${HOME}\\.cargo\\registry`, "2. 条目": "crate 源码与二进制 1840 个" },
+      detail: [
+        drow("path", rtxt(`${HOME}\\.cargo\\registry`)),
+        drow("entries", ftxt("data.value.count", { n: narg(1840) })),
+        drow("note", ktxt("data.toolchainNote.cargoRegistry")),
+      ],
     }),
   item({
       id: "toolchain:rustup",
@@ -257,7 +276,11 @@ const toolchainItems: Item[] = [
       kind_label: ktxt("data.kind.installed"),
       path: `${HOME}\\.rustup\\toolchains`,
       metrics: { size: bytes(4.8 * GB), last_modified: count(ago(45)), kind: text("已安装") },
-      detail: { "1. 位置": `${HOME}\\.rustup\\toolchains`, "2. 版本": "1.82 / 1.75 / 1.71" },
+      detail: [
+        drow("path", rtxt(`${HOME}\\.rustup\\toolchains`)),
+        drow("kind", ktxt("data.kind.installed")),
+        drow("note", ktxt("data.toolchainNote.rustupToolchains")),
+      ],
     }),
   item({
       id: "toolchain:pnpm",
@@ -268,11 +291,12 @@ const toolchainItems: Item[] = [
       kind_label: ktxt("data.kind.downloadCache"),
       path: `${HOME}\\AppData\\Local\\pnpm-cache`,
       metrics: { size: bytes(3.4 * GB), last_modified: count(ago(3)), kind: text("下载缓存") },
-      detail: {
-        "1. 位置": `${HOME}\\AppData\\Local\\pnpm-cache`,
-        "2. 条目": "包 2100 个",
-        "3. 说明": "官方清理命令：pnpm store prune（只删未引用的包，更精确）",
-      },
+      detail: [
+        drow("path", rtxt(`${HOME}\\AppData\\Local\\pnpm-cache`)),
+        drow("entries", ftxt("data.value.count", { n: narg(2100) })),
+        drow("cleanHow", ftxt("data.value.cleanByCommand", { cmd: rtxt("pnpm store prune") })),
+        drow("note", ktxt("data.toolchainNote.pnpmStore")),
+      ],
     }),
   item({
       id: "toolchain:npm",
@@ -283,7 +307,11 @@ const toolchainItems: Item[] = [
       kind_label: ktxt("data.kind.downloadCache"),
       path: `${HOME}\\AppData\\Local\\npm-cache`,
       metrics: { size: bytes(1.2 * GB), last_modified: count(ago(9)), kind: text("下载缓存") },
-      detail: { "3. 说明": "官方清理命令：npm cache clean --force" },
+      detail: [
+        drow("path", rtxt(`${HOME}\\AppData\\Local\\npm-cache`)),
+        drow("cleanHow", ftxt("data.value.cleanByCommand", { cmd: rtxt("npm cache clean --force") })),
+        drow("note", ktxt("data.toolchainNote.npmCache")),
+      ],
     }),
   item({
       id: "toolchain:pip",
@@ -429,7 +457,10 @@ const localModelItems: Item[] = [
       group_label: rtxt("Ollama"),
       path: `${HOME}\\.ollama\\models\\qwen3-32b`,
       metrics: { size: bytes(18.6 * GB), last_modified: count(ago(12)) },
-      detail: { "1. 模型": "qwen3:32b · codellama:13b" },
+      detail: [
+        drow("path", rtxt(`${HOME}\\.ollama\\models\\qwen3-32b`)),
+        drow("weightLayers", ftxt("data.value.layerCount", { n: narg(2) })),
+      ],
     }),
   item({
       id: "lmstudio",
