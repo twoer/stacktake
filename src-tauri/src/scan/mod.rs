@@ -270,10 +270,10 @@ pub fn synthesize_overview(groups: &[AssetGroup]) -> AssetGroup {
             },
         ],
         items,
-        notes: Some(vec![
-            "总占用只统计侧栏已注册的分组。未纳入 V1 的范围（如 Docker Desktop）不计入——这是既定取舍，不是漏扫。".into(),
-            "点任意一行进入对应分组。".into(),
-        ]),
+        // 总览不带 notes：口径说明（总占用只统计已注册分组、报不满是既定取舍）
+        // 在 README「扫描策略」与 known-limits 常驻，行可点击性由行自身的
+        // hover 与光标承担——自我解释的文案不进账本。
+        notes: None,
         error: None,
         // 总览本身没有可清理的行（每行是 `overview://<组>`，不是宿主机路径，
         // 前端 `isLocalPath` 天然不给动作），所以恒 false。清理要在具体分组里做。

@@ -632,7 +632,11 @@ const selectedRow = computed(() => {
   return current.value?.items.find((it) => it.id === selected.value) ?? null;
 });
 
-/** 总览首块「本机合计」：总占用 / 可回收 / 分组数 / 近 7 天有提交。口径在 lib/rows。 */
+/** 可回收的口径提醒：总览 masthead 与状态栏共用一句，口径变了只改这里。 */
+const RECLAIM_ESTIMATE_HINT =
+  "可回收为估算值：含共享硬链接的目录（如 Rust 的 target/）可能偏高";
+
+/** 总览首块「本机合计」：总占用 / 可回收 / 分组数 / 条目总数 / 近 7 天有提交。口径在 lib/rows。 */
 const machineStats = computed(() => machineStatsOf(groups.value, now.value));
 
 /** 模板签名保持 (item)；占比带与「分母是全组合计」的口径在 lib/rows。 */
@@ -802,36 +806,56 @@ async function onRescan() {
           <!-- 总览首块（台账式页头）：合计 / 可回收进主区，检查器不再重复。
                一个主角数字，不是一排卡片——卡片形态早先被否过，层级靠字号不靠盒子。
                占比带已删（U15）：带与表格同序同数是同一笔账印两遍，占比改进表格的
-               「占比」列；带内印字的分段进度条是云存储仪表盘的构图，不是账本的。 -->
-          <div v-if="isOverview && machineStats.total > 0" class="px-3 pt-3">
-            <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-1.5">
-              <div>
-                <div class="text-[11px] text-muted-foreground">本机合计</div>
-                <!-- 30px 正文字体主角位（U15 退回正文）：等宽大数字是终端排印，账本的数字
-                     是正文字体的 tabular 等宽数字——对齐能力相同，气质是书的黑不是终端的绿。
+               「占比」列；带内印字的分段进度条是云存储仪表盘的构图，不是账本的。
+               排印取年度报告的 masthead：主角数字与右侧统计立成图表位（标签在上、
+               数值在下、底缘对齐）——高级感来自字号阶差与基线对齐，不来自加盒子加色。 -->
+          <div v-if="isOverview && machineStats.total > 0" class="px-3 pb-1 pt-7">
+            <div class="flex flex-wrap items-end justify-between gap-x-10 gap-y-4">
+              <div class="min-w-0">
+                <div class="text-[11px] tracking-[0.18em] text-muted-foreground">本机合计</div>
+                <!-- 42px masthead（2026-10-25 自 30px 上探）：总览是唯一的整页报告位，
+                     主角数字要撑得起页面的空白；仍是正文字体 tabular（U15 定的方向），
+                     .hero-figure 墨色退一档，大而不抢账目。
                      走 ByteValue：值 500 字重、单位 11px 同色，与全表同一套排印。 -->
-                <p class="hero-figure mt-1 text-[30px] font-semibold leading-none tracking-tight">
+                <p class="hero-figure mt-2 text-[42px] font-semibold leading-none tracking-tight">
                   <ByteValue :bytes="machineStats.total" animate />
                 </p>
               </div>
-              <div class="flex flex-wrap items-baseline gap-x-4 gap-y-1 pb-0.5 text-[11px] text-muted-foreground">
-                <span class="whitespace-nowrap">
-                  可回收
-                  <ByteValue class="text-reclaim text-xs" :bytes="machineStats.reclaim" animate />
-                </span>
-                <span class="whitespace-nowrap">{{ machineStats.count }} 个分组</span>
-                <span class="whitespace-nowrap">近 7 天 {{ machineStats.recent }} 个仓库有提交</span>
+              <div class="flex flex-wrap items-end gap-x-10 gap-y-3">
+                <Hint :text="RECLAIM_ESTIMATE_HINT">
+                  <div>
+                    <div class="text-[11px] tracking-[0.18em] text-muted-foreground">可回收</div>
+                    <ByteValue
+                      class="mt-1.5 block text-[15px] leading-none text-reclaim"
+                      :bytes="machineStats.reclaim"
+                      animate
+                    />
+                  </div>
+                </Hint>
+                <div>
+                  <div class="text-[11px] tracking-[0.18em] text-muted-foreground">分组数</div>
+                  <div class="mt-1.5 text-[15px] font-medium leading-none tabular-nums">
+                    {{ machineStats.count }}<span class="ml-0.5 text-[11px] font-normal text-muted-foreground">个</span>
+                  </div>
+                </div>
+                <div>
+                  <div class="text-[11px] tracking-[0.18em] text-muted-foreground">近 7 天有提交</div>
+                  <div class="mt-1.5 text-[15px] font-medium leading-none tabular-nums">
+                    {{ machineStats.recent }}<span class="ml-0.5 text-[11px] font-normal text-muted-foreground">个仓库</span>
+                  </div>
+                </div>
               </div>
             </div>
             <!-- 账本头线：页头与账目之间一条墨线，全页唯一的重线。合计属于页眉，
                  线以下才是条目；分组视图没有页头也就没有这条线（一页最多一条重线，
                  多了就退回网格纸）。进入时从左侧画到右侧，像落笔划线。 -->
-            <div class="head-rule mt-3" />
+            <div class="head-rule mt-5" />
           </div>
           <!-- 仓库那组两百多行滚下去表头就没了，不知道每列是什么，所以吸顶 -->
           <div
             v-if="visibleRows.length"
             class="sticky top-0 z-10 grid gap-2 border-b border-border/40 bg-background px-3 pb-1.5 pt-1.5 text-xs text-muted-foreground"
+            :class="isOverview ? 'text-[11px] tracking-[0.08em]' : ''"
             :style="{ gridTemplateColumns: gridCols }"
           >
             <button
@@ -906,11 +930,13 @@ async function onRescan() {
                      不再用 bg-muted 整行硬切。 -->
                 <span class="row-wash" aria-hidden="true" />
                 <span class="row-tick" aria-hidden="true" />
-                <!-- 总览行是分组行，只有 6 行，行距放大一档；分组视图回到 26px 紧凑档。 -->
+                <!-- 总览行是分组行，个数恒为个位数：行距与字号在总览档再上一级
+                     （py-3.5 / 名 15px / 值 14px），四行账目要配得上整页的版面；
+                     分组视图回到 26px 紧凑档。 -->
                 <button
                   class="grid w-full min-w-0 items-baseline gap-2 px-3 text-left leading-[18px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   :style="{ gridTemplateColumns: gridCols }"
-                  :class="isOverview ? 'py-2.5' : 'py-1'"
+                  :class="isOverview ? 'py-3.5' : 'py-1'"
                   @click="onRowClick(row.item)"
                   @contextmenu.prevent="openMenu($event, row.item)"
                 >
@@ -928,7 +954,7 @@ async function onRescan() {
                     <Hint :text="rowTitle(row.item)">
                       <span
                         class="min-w-0 truncate"
-                        :class="isOverview ? 'text-[14px] font-medium' : 'text-[13px]'"
+                        :class="isOverview ? 'text-[15px] font-medium' : 'text-[13px]'"
                       >{{ rowName(row.item) }}</span>
                     </Hint>
                     <!-- 标签逐个挂提示：hover 哪个解释哪个，比整段一份说明精确。
@@ -965,7 +991,7 @@ async function onRescan() {
                       // 也是值，跟时间这种元数据不是一回事。
                       c.temporal ? 'text-muted-foreground' : 'text-foreground',
                       c.mono ? 'font-mono text-[11px]' : '',
-                      isOverview ? 'text-[13px]' : 'text-xs',
+                      isOverview ? 'text-[14px]' : 'text-xs',
                     ]"
                   >
                     <template v-if="c.key === 'reclaimable'">
@@ -1074,8 +1100,12 @@ async function onRescan() {
     >
       <!-- 合计是本屏最该看清的两个数之一（另一个在检查器主角位），近黑；
            整条状态栏底色是 muted，这里不显式抬到 foreground 的话会跟着一起灰 -->
+      <!-- 总览档不带合计：masthead 主角数字与之同值同口径，一屏印两遍。
+           换成条目总数（各分组「条目」列之和），这页唯一没在别处出现的合计；
+           其余视图维持 行数 · 合计。 -->
       <span class="tabular-nums text-foreground">
-        {{ visibleRows.length }} 项 · <ByteValue :bytes="statusSum" />
+        <template v-if="isOverview">{{ machineStats.items }} 项</template>
+        <template v-else>{{ visibleRows.length }} 项 · <ByteValue :bytes="statusSum" /></template>
       </span>
       <div class="flex items-center gap-3">
         <!-- 数据新鲜度挪到状态栏常驻：此前只挂在「重扫」按钮的 title 上，
@@ -1098,7 +1128,7 @@ async function onRescan() {
         </Hint>
         <Hint
           v-if="statusReclaim > 0"
-          text="可回收为估算值：含共享硬链接的目录（如 Rust 的 target/）可能偏高"
+          :text="RECLAIM_ESTIMATE_HINT"
         >
           <span class="tabular-nums">
             可回收

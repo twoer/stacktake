@@ -209,7 +209,7 @@ html.macos body {
   animation: rule-draw 340ms var(--ease-out) both;
 }
 
-/* 页头合计：层级靠 30px 字号，墨色退一档，免得压过下面的账目 */
+/* 页头合计：层级靠 42px 字号，墨色退一档，免得压过下面的账目 */
 .hero-figure {
   color: color-mix(in oklab, var(--foreground) 88%, transparent);
 }

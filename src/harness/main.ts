@@ -381,7 +381,7 @@ function synthesizeOverview(list: AssetGroup[]): AssetGroup {
         },
       }),
     ),
-    notes: ["总占用只统计侧栏已注册的分组。", "点任意一行进入对应分组。"],
+    notes: [],
   };
 }
 

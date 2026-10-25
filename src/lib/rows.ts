@@ -235,15 +235,16 @@ export function sectionReclaim(rows: Row[]): number {
 
 // ---- 总览统计 ----
 
-/** 总览首块「本机合计」：总占用 / 可回收 / 分组数 / 近 7 天有提交。nowSecs 由
- *  调用方传（Assets 的 now 是跟着时间针走的 ref），本模块保持纯函数可测。 */
+/** 总览首块「本机合计」：总占用 / 可回收 / 分组数 / 条目总数 / 近 7 天有提交。
+ *  nowSecs 由调用方传（Assets 的 now 是跟着时间针走的 ref），本模块保持纯函数可测。 */
 export function machineStatsOf(
   groups: AssetGroup[],
   nowSecs: number,
-): { total: number; reclaim: number; count: number; recent: number } {
+): { total: number; reclaim: number; count: number; items: number; recent: number } {
   const real = groups.filter((g) => g.id !== "overview");
   const total = real.reduce((s, g) => s + groupSize(g), 0);
   const reclaim = real.reduce((s, g) => s + groupReclaimable(g), 0);
+  const items = real.reduce((s, g) => s + g.items.length, 0);
   const repos = real.find((g) => g.id === "repos");
   const week = 7 * 86400;
   const recent = repos
@@ -252,7 +253,7 @@ export function machineStatsOf(
         return m && (m.t === "b" || m.t === "i") && nowSecs - m.v < week;
       }).length
     : 0;
-  return { total, reclaim, count: real.length, recent };
+  return { total, reclaim, count: real.length, items, recent };
 }
 
 /**

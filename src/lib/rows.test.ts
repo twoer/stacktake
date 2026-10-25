@@ -261,9 +261,9 @@ describe("machineStatsOf —— 总览统计剔掉 overview 行", () => {
   const tool = group({ id: "toolchain", items: [item({ metrics: { size: { t: "b", v: 5 } } })] });
   const overview = group({ id: "overview", items: [item({ metrics: { size: { t: "b", v: 999 } } })] });
 
-  it("合计与分组数不含 overview；近 7 天只数 repos 且按严格小于一周", () => {
+  it("合计与分组数不含 overview；条目总数只累加真实分组；近 7 天只数 repos 且按严格小于一周", () => {
     const s = machineStatsOf([repos, tool, overview], now);
-    expect(s).toEqual({ total: 35, reclaim: 30, count: 2, recent: 1 });
+    expect(s).toEqual({ total: 35, reclaim: 30, count: 2, items: 3, recent: 1 });
   });
 
   it("没有 repos 组时 recent 为 0，不抛错", () => {
