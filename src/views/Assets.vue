@@ -11,7 +11,7 @@ import {
 } from "@lucide/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "vue-sonner";
-import type { AssetGroup, CleanResult, Item } from "@/lib/types";
+import type { CleanResult, Item } from "@/lib/types";
 import {
   formatAgo,
   formatBytes,
@@ -23,15 +23,20 @@ import {
 import { useAssets } from "@/composables/useAssets";
 import { useRepoRoots } from "@/composables/useRepoRoots";
 import { captureRowTops, playRowFlip } from "@/lib/motion";
+import { canCleanArtifactsItem, canCleanItem, cell, isBlockerTag, tagHint } from "@/lib/assets";
 import {
-  canCleanArtifactsItem,
-  canCleanItem,
-  cell,
-  isBlockerTag,
-  orderedTags,
-  tagHint,
-} from "@/lib/assets";
-import type { Dimension } from "@/lib/assets";
+  countMatches,
+  dimensionsFor,
+  machineStatsOf,
+  rowName,
+  rowTagsOf,
+  sectionReclaim,
+  sectionSize,
+  sectionsOf,
+  shareLabelOf,
+  suppressedTagsOf,
+  visibleRowsOf,
+} from "@/lib/rows";
 import { isLocalPath } from "@/lib/path";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -452,7 +457,7 @@ const cols = computed(() => {
   ];
   for (const f of g.fields.slice(0, 3)) {
     out.push({ key: f.key, label: f.label, temporal: f.temporal ?? undefined });
-    // 总览的「占比」是前端派生列（见 shareOf），紧跟体积：部分与整体并排才读得出比例
+    // 总览的「占比」是前端派生列（标注在 lib/rows 的 shareLabelOf），紧跟体积：部分与整体并排才读得出比例
     if (f.key === "size" && g.id === "overview") {
       out.push({ key: "share", label: "占比" });
     }
@@ -527,51 +532,18 @@ function colTitle(c: { key: string }): string | undefined {
 }
 
 // ---- 行：基础集合 + 筛选 + 排序 ----
+// 管线本体（搜索 → 维度筛选 → 排序）在 lib/rows（T2 下沉），判据由 rows.test.ts 钉着。
 
 /** 总览视图的行就是各分组（点它进分组）；分组视图的行是 items。 */
 const baseRows = computed(() => {
   const g = current.value;
   if (!g) return [];
-  return g.items.map((item) => ({ item, rowName: item.name }));
+  return g.items.map((item) => ({ item }));
 });
 
-const searchHit = (it: Item) => {
-  const q = search.value.trim().toLowerCase();
-  if (!q) return true;
-  // 路径也参与匹配：搜 ~/Documents/Code 下的目录名往往比仓库名更好记
-  return it.name.toLowerCase().includes(q) || it.path.toLowerCase().includes(q);
-};
-
-const visibleRows = computed(() => {
-  let rows = baseRows.value.filter((r) => searchHit(r.item));
-  const active = Object.entries(dims.value).filter(([, v]) => v);
-  if (active.length) {
-    rows = rows.filter((r) => active.every(([k, v]) => matchDim(r.item, k, v!)));
-  }
-  const key = sortKey.value;
-  if (key) {
-    const dir = sortDesc.value ? -1 : 1;
-    rows = [...rows].sort((a, b) => {
-      const va = sortValue(a.item, key);
-      const vb = sortValue(b.item, key);
-      if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
-      return String(va).localeCompare(String(vb), "zh-CN") * dir;
-    });
-  }
-  return rows;
-});
-
-function sortValue(it: Item, key: string): number | string {
-  if (key === "name") return it.name;
-  if (key === "reclaimable") return reclaimableOf(it);
-  // 占比是体积的单调函数，排序直接用体积，省一次除法也避免浮点并列
-  if (key === "share") return itemSize(it);
-  const m = it.metrics[key];
-  if (!m) return "";
-  if (m.t === "i" || m.t === "b") return m.v;
-  if (m.t === "z") return m.v ? 1 : 0;
-  return m.v;
-}
+const visibleRows = computed(() =>
+  visibleRowsOf(baseRows.value, search.value, dims.value, sortKey.value, sortDesc.value),
+);
 
 function toggleSort(key: string) {
   withRowFlip(() => {
@@ -586,76 +558,15 @@ function toggleSort(key: string) {
 }
 
 // ---- 筛选维度 ----
-//
-// 一条 item 的维度取值在不同分组装的是不同的东西：toolchain 的 `group_key` 是
-// 「栈」、ai_tools 是「工具名」、java 是「组件」。所以维度由分组声明、名字也由
-// 分组给（PREFIX_LABEL）——不是同一根轴的三种叫法，是三种不同的轴。
-// 分节与筛选都读 `group_key`（G1 起正式化成数据），不再解析名字里的 ` · `。
-// 只有某个维度真有 ≥2 个取值时才做成筛选项：tag 只有一个「可清理」的分组，
-// 做成筛选没有意义（选了等于没选），直接不出。
-
-const PREFIX_LABEL: Record<string, string> = {
-  toolchain: "栈",
-  ai_tools: "工具",
-  java: "组件",
-  local_models: "来源",
-};
-
-function dimensionsFor(g: AssetGroup | null): Dimension[] {
-  if (!g || !g.items.length) return [];
-  const dims: Dimension[] = [];
-
-  const pl = PREFIX_LABEL[g.id];
-  if (pl) {
-    const vals = new Set<string>();
-    for (const it of g.items) if (it.group_key) vals.add(it.group_key);
-    if (vals.size >= 2) {
-      dims.push({ key: "prefix", label: pl, options: [...vals].sort() });
-    }
-  }
-
-  const kinds = new Set<string>();
-  for (const it of g.items) {
-    const m = it.metrics.kind;
-    if (m && m.t === "s") kinds.add(m.v);
-  }
-  if (kinds.size >= 2) {
-    dims.push({ key: "kind", label: "类别", options: [...kinds].sort() });
-  }
-
-  const tags = new Set<string>();
-  for (const it of g.items) for (const t of it.tags) tags.add(t);
-  if (tags.size >= 2) {
-    dims.push({ key: "tag", label: "标签", options: [...tags].sort() });
-  }
-  return dims;
-}
+// 维度声明（PREFIX_LABEL）、「≥2 取值才出按钮」与三根轴的匹配判据在 lib/rows
+// （T2 下沉，含事故背景注释）；这里只接状态：dimsOfCurrent 喂 FilterMenu，
+// optionCount 保持 count-for 的 (dimKey, value) 签名。
 
 const dimsOfCurrent = computed(() => dimensionsFor(current.value));
 
-function matchDim(it: Item, key: string, val: string): boolean {
-  if (key === "prefix") return it.group_key === val;
-  if (key === "kind") {
-    const m = it.metrics.kind;
-    return !!m && m.t === "s" && m.v === val;
-  }
-  if (key === "tag") return it.tags.includes(val);
-  return true;
-}
-
-/**
- * 菜单里每项的计数按「其它维度已经筛过」的口径算——否则数字跟筛选结果对不上。
- */
+/** 菜单里每项的计数按「其它维度已经筛过」的口径算——口径在 lib/rows。 */
 function optionCount(dimKey: string, value: string | null): number {
-  const rest = Object.entries(dims.value).filter(
-    ([k, v]) => k !== dimKey && v,
-  );
-  return baseRows.value.filter(
-    (r) =>
-      searchHit(r.item) &&
-      rest.every(([k, v]) => matchDim(r.item, k, v!)) &&
-      (value === null || matchDim(r.item, dimKey, value)),
-  ).length;
+  return countMatches(baseRows.value, search.value, dims.value, dimKey, value);
 }
 
 function setDim(key: string, value: string | null) {
@@ -675,89 +586,18 @@ function clearFilters() {
 }
 
 // ---- 分节 ----
+// group_key 分节契约的判据与事故背景在 lib/rows（rows.test.ts 钉前端半边）；
+// 这里只接管线。rowName 由 lib/rows 直接供给模板（同名，签名不变）。
+const sections = computed(() => sectionsOf(visibleRows.value));
 
-/**
- * 按 `group_key` 分节渲染：取值做小节标题（带小计），行名只显示后半截。
- * AI 工具分组一个工具就有多个类别行，名称列每行重复「WorkBuddy ·」是纯噪音。
- * 整组都没有 group_key（repos / 鸿蒙 / WSL）时走单组，不分节。
- */
-const sections = computed(() => {
-  const rows = visibleRows.value;
-  const g = current.value;
-  if (!g || !rows.length || !rows.every((r) => r.item.group_key)) {
-    return [{ key: null as string | null, rows }];
-  }
-  const map = new Map<string, typeof rows>();
-  for (const r of rows) {
-    const k = r.item.group_key!;
-    if (!map.has(k)) map.set(k, []);
-    map.get(k)!.push(r);
-  }
-  return [...map.entries()].map(([key, rs]) => ({ key, rows: rs }));
-});
+// ---- 标签抑制与行内标签 ----
+// 多数派抑制的两个护栏（MIN_ROWS=6 / RATIO=0.7）、「可清理」chip 与绿字互斥、
+// 「大」恒不上行——判据与理由都在 lib/rows，阈值边界由 rows.test.ts 钉着；
+// 只影响渲染，筛选维度仍读 item.tags 原始数据。
+const suppressedTags = computed(() => suppressedTagsOf(visibleRows.value));
 
-/** 分节行名去掉 `group_key · ` 前缀（名字仍保留全串，搜索与检查器用全串）。 */
-function rowName(it: Item): string {
-  const prefix = it.group_key ? `${it.group_key} · ` : "";
-  return it.name.startsWith(prefix) ? it.name.slice(prefix.length) : it.name;
-}
-
-// ---- 多数派标签抑制 ----
-//
-// 「大」在体积降序视图里几乎恒真（默认排序就是体积降序），「有产物」在本机仓库里
-// 也是十之八九——这类标签每行都挂，信息量为零，还把每行撑成两行。规则是数据驱动的
-// 一条：某标签在当前**可见行**里占了绝大多数，这一屏就不渲染它。
-// 两个护栏：可见行太少时不抑制（筛到三两行时标签是主要信息）；只影响渲染——
-// 筛选维度读的是 `item.tags` 原始数据（`dimensionsFor` / `matchDim`），菜单里照旧可筛。
-
-const MAJORITY_RATIO = 0.7;
-const MAJORITY_MIN_ROWS = 6;
-
-const suppressedTags = computed(() => {
-  const rows = visibleRows.value;
-  const out = new Set<string>();
-  if (rows.length < MAJORITY_MIN_ROWS) return out;
-  const counts = new Map<string, number>();
-  for (const r of rows) for (const t of r.item.tags) counts.set(t, (counts.get(t) ?? 0) + 1);
-  for (const [t, n] of counts) if (n / rows.length >= MAJORITY_RATIO) out.add(t);
-  return out;
-});
-
-// ---- 标签释义 ----
-//
-// 标签是筛选维度的取值（Rust 侧定死，`scan/tests.rs` 断言钉着），所以不能靠
-// 改名把它说清楚——只能在 hover 上补一句。补的这句只解释「这条是怎么判出来的」，
-// 不重复行里已经有的数字。
-//
-// 两个数字（200 MB / 180 天）与 Rust 侧 `LARGE_REPO_BYTES` / `STALE_DAYS`
-// （`src-tauri/src/scan/repos.rs`）对齐。改那边要同步改这里，否则提示会撒谎。
-function visibleTags(it: Item): string[] {
-  return it.tags.filter((t) => {
-    if (suppressedTags.value.has(t)) return false;
-    // 「可清理」chip 与绿字可回收是同一件事的两次陈述：三个可清理分组的账面上
-    // reclaimable>0 ⟺ 有删除入口。绿字已经在体积列里（可回收合并进体积列，
-    // 见 splitReclaim），chip 不再挂第二行——它一挂，行就变两行，整列一多半
-    // 行都是同一块灰牌子。
-    // reclaimable==0 却标了可清理的异常行保留 chip；筛选维度仍读原始 tags。
-    if (t === "可清理" && reclaimableOf(it) > 0) return false;
-    // 「大」只是体积过阈值的别名，体积列就在同一行右边——行内再写一遍是同一事实
-    // 的第二遍陈述（U15 去药丸时顺手收掉；筛选菜单仍读原始 tags，照常可按「大」筛）。
-    if (t === "大") return false;
-    return true;
-  });
-}
-
-/** 行内渲染口径：先抑制，再把阻断项提到最前——限宽截断时牺牲的是说明项。 */
 function rowTags(it: Item): string[] {
-  return orderedTags(visibleTags(it));
-}
-
-function sectionSize(rows: { item: Item }[]): number {
-  return rows.reduce((s, r) => s + itemSize(r.item), 0);
-}
-
-function sectionReclaim(rows: { item: Item }[]): number {
-  return rows.reduce((s, r) => s + (r.item.cleanable ? reclaimableOf(r.item) : 0), 0);
+  return rowTagsOf(it, suppressedTags.value);
 }
 
 // ---- 行点击：总览行进分组，分组行选中看明细 ----
@@ -792,47 +632,16 @@ const selectedRow = computed(() => {
   return current.value?.items.find((it) => it.id === selected.value) ?? null;
 });
 
-/** 总览首块「本机合计」：总占用 / 可回收 / 分组数 / 近 7 天有提交。 */
-const machineStats = computed(() => {
-  const real = groups.value.filter((g) => g.id !== "overview");
-  const total = real.reduce((s, g) => s + groupSize(g), 0);
-  const reclaim = real.reduce((s, g) => s + groupReclaimable(g), 0);
-  const repos = real.find((g) => g.id === "repos");
-  const week = 7 * 86400;
-  const recent = repos
-    ? repos.items.filter((it) => {
-        const m = it.metrics.last_commit;
-        return m && (m.t === "b" || m.t === "i") && now.value - m.v < week;
-      }).length
-    : 0;
-  return { total, reclaim, count: real.length, recent };
-});
+/** 总览首块「本机合计」：总占用 / 可回收 / 分组数 / 近 7 天有提交。口径在 lib/rows。 */
+const machineStats = computed(() => machineStatsOf(groups.value, now.value));
 
-
-/**
- * 总览「占比」列（U15）：前端派生列，不是 Rust 下发的 field——fields 契约
- * （最多三个）不动。份额分母是全部分组的合计（machineStats.total），不是当前
- * 可见行之和：筛掉几行后占比不该跟着变（它说的是「占整机多少」）。
- * 标注档位沿用原占比带：≥10% 取整、≥0.5% 一位小数、再小只写 <0.1%。
- */
-function shareOf(it: Item): number {
-  const total = machineStats.value.total;
-  return total > 0 ? itemSize(it) / total : 0;
-}
+/** 模板签名保持 (item)；占比带与「分母是全组合计」的口径在 lib/rows。 */
 function shareLabel(it: Item): string {
-  const share = shareOf(it);
-  if (share <= 0) return "";
-  if (share >= 0.1) return `${Math.round(share * 100)}%`;
-  if (share >= 0.005) return `${(share * 100).toFixed(1)}%`;
-  return "<0.1%";
+  return shareLabelOf(it, machineStats.value.total);
 }
 
-const statusSum = computed(() =>
-  visibleRows.value.reduce((s, r) => s + itemSize(r.item), 0),
-);
-const statusReclaim = computed(() =>
-  visibleRows.value.reduce((s, r) => s + (r.item.cleanable ? reclaimableOf(r.item) : 0), 0),
-);
+const statusSum = computed(() => sectionSize(visibleRows.value));
+const statusReclaim = computed(() => sectionReclaim(visibleRows.value));
 
 const scanPct = computed(() => {
   const p = progress.value;
