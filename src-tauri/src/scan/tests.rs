@@ -1315,6 +1315,10 @@ Host gamma
     /// 实测读缓存毫秒级、全量扫描约 26 秒（2026-10-13，`cargo run --example dump`），
     /// 差 4 个数量级。具体数字只写在 README / AGENTS 的耗时段（带出处），
     /// 代码注释里不重复——重复的那几处正是前一次漂移的来源。
+    ///
+    /// 取多次读取的最小值而不是单次：nextest 把它与做体积统计的重测试并行跑，
+    /// 磁盘争用只会把单次读数往上推、不会往下拉，最小值才是滤掉争用后的真实成本。
+    /// 阈值不是调节的旋钮——代码真变慢时每一次都慢，最小值一样红。
     #[test]
     fn reading_cache_is_effectively_instant() {
         let dir = temp_dir("boot-speed");
@@ -1331,15 +1335,21 @@ Host gamma
             .collect();
         cache::save(&dir, &groups).unwrap();
 
-        let start = std::time::Instant::now();
-        let snap = cache::load(&dir).expect("读缓存失败");
-        let elapsed = start.elapsed();
+        let fastest = (0..5)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                let snap = cache::load(&dir).expect("读缓存失败");
+                let elapsed = start.elapsed();
+                assert_eq!(snap.groups.len(), 237);
+                elapsed
+            })
+            .min()
+            .unwrap();
 
-        assert_eq!(snap.groups.len(), 237);
         assert!(
-            elapsed < std::time::Duration::from_millis(200),
-            "读缓存耗时 {:?}，超过 200ms 就失去了「秒开」的意义",
-            elapsed
+            fastest < std::time::Duration::from_millis(200),
+            "读缓存最快一次也要 {:?}，超过 200ms 就失去了「秒开」的意义",
+            fastest
         );
 
         std::fs::remove_dir_all(&dir).ok();
