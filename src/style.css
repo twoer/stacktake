@@ -60,7 +60,7 @@
   --ease-page: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-/* 深色变量：由 useTheme 在 <html> 上切 .dark class 启用（顶栏有切换入口，选择持久化）。
+/* 深色变量：由 useTheme 在 <html> 上切 .dark class 启用（设置页「外观」三档，选择持久化）。
    深色 = 墨黑（暖相 0.17，比旧 0.145 略亮半档），字是纸色。 */
 .dark {
   --background: oklch(0.17 0.009 90);

@@ -38,6 +38,7 @@ import {
   visibleRowsOf,
 } from "@/lib/rows";
 import { isLocalPath } from "@/lib/path";
+import { STALE_AFTER_SECS } from "@/lib/autoScan";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import ByteValue from "@/components/ByteValue.vue";
@@ -65,7 +66,7 @@ const {
   rescan,
   rescanGroup,
 } = useAssets();
-// 主题切给 AssetsToolbar 自己管（useTheme 单例）；本文件不再读它。
+// 外观三档在设置页管（useTheme 单例）；本文件不读它。
 const {
   roots: repoRoots,
   pending: repoRootsPending,
@@ -669,7 +670,7 @@ const viewSavedAt = computed<number | null>(() => {
 });
 
 const stale = computed(
-  () => viewSavedAt.value != null && now.value - viewSavedAt.value > 86400,
+  () => viewSavedAt.value != null && now.value - viewSavedAt.value > STALE_AFTER_SECS,
 );
 
 /** 「数据更新于」的人话读数跟时间针走：开着过夜也要从「3 小时前」走到「一天前」。 */

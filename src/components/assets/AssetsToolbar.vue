@@ -1,18 +1,16 @@
 <script setup lang="ts">
-import { Moon, PanelRight, RefreshCw, Search, Sun, X } from "@lucide/vue";
-import { useTheme } from "@/composables/useTheme";
+import { PanelRight, RefreshCw, Search, X } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import Hint from "@/components/Hint.vue";
 
 /**
  * 资产页工具栏（2026-10-24 拆分计划阶段 4 从 Assets.vue 搬出，模板逐字保留）：
- * 标题 + 中段插槽（维度筛选 / 搜索）+ 右侧外观 / 检查器 / 重扫控件。
+ * 标题 + 中段插槽（维度筛选 / 搜索）+ 右侧检查器 / 重扫控件。
  *
  * 职责边界：标题与重扫文案由父组件算好传入（判据依赖 loading / progress /
  * isOverview，收进来反而要把这圈状态都搬过来）；检查器开合与搜索词是真值
- * 在父的 defineModel；主题走 useTheme 模块单例（与检查器开关不同，它没有
- * 「父组件还要读」的消费方）。空区是窗口拖动区（Overlay 标题栏要自己给），
- * 整条挂 drag-region，控件靠自身交互恢复事件。
+ * 在父的 defineModel；外观三档在设置页，不占这里。空区是窗口拖动区
+ * （Overlay 标题栏要自己给），整条挂 drag-region，控件靠自身交互恢复事件。
  */
 defineProps<{
   title: string;
@@ -29,12 +27,10 @@ const search = defineModel<string>("search", { default: "" });
 const emit = defineEmits<{
   rescan: [];
 }>();
-
-const { theme, toggle: toggleTheme } = useTheme();
 </script>
 
 <template>
-  <!-- 工具栏：标题 + 维度筛选 + 搜索 + 外观/检查器/重扫。
+  <!-- 工具栏：标题 + 维度筛选 + 搜索 + 检查器/重扫。
        空区是窗口拖动区（titleBarStyle: Overlay 要自己给）。
        整条挂 drag-region，控件用 pointer-events: auto 恢复交互。 -->
   <div class="flex h-11 shrink-0 items-center gap-2 border-b border-border/40 bg-background px-3" data-tauri-drag-region>
@@ -91,20 +87,6 @@ const { theme, toggle: toggleTheme } = useTheme();
     <!-- 别给 Windows 加 caption 按钮避让：它有系统标题栏，窗口按钮不浮在 webview 上，
          避让只会把重扫推离右缘（pr-[140px] 在 Windows 真机上就是这么露馅的）。 -->
     <div class="flex shrink-0 items-center gap-1">
-      <!-- 图标语义是「点了去哪个模式」：深色里显示太阳（点它回浅色），反之月亮。
-           vue-sonner 自己不读 .dark class，theme 必须显式传。 -->
-      <Hint :text="theme === 'dark' ? '切换到浅色' : '切换到深色'">
-        <Button
-          size="xs"
-          variant="ghost"
-          class="h-6 w-6 px-0 text-muted-foreground [&_svg]:size-3.5"
-          :aria-label="theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'"
-          @click="toggleTheme"
-        >
-          <Sun v-if="theme === 'dark'" aria-hidden="true" />
-          <Moon v-else aria-hidden="true" />
-        </Button>
-      </Hint>
       <!-- 总览没有检查器（数字都在主区首块），开关一并隐藏，点了也是空操作 -->
       <Hint v-if="!isOverview" :text="inspectorOpen ? '隐藏检查器' : '显示检查器'">
         <Button

@@ -1,57 +1,61 @@
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-
-export type Theme = "light" | "dark";
-
-const STORAGE_KEY = "stacktake-theme";
+import {
+  THEME_STORAGE_KEY,
+  nativeThemeFor,
+  parseThemePreference,
+  resolveTheme,
+  type ThemePreference,
+} from "@/lib/theme";
 
 /**
- * 深浅色状态。模块级单例，同 useAssets——目前只有顶栏一个写入点，
- * 但保持单例，免得以后第二个消费方各持一份状态。
+ * 外观偏好。模块级单例，同 useAssets——App 外壳（toast）与设置页共享一份。
  *
- * 三件事：
- * 1. 首次（没有存过选择）跟随系统 prefers-color-scheme，并持续跟随——
- *    macOS 用户开着「自动」外观时会日落切深色，开着的 app 也该跟着变。
- * 2. 用户一旦手动切换过就以存储值为准，系统再变也不打扰（写存储只发生在
- *    主动切换时；启动时应用初始值不写，否则「没有选择」这个状态就丢了）。
+ * 三态：system（跟随系统，缺省）/ light / dark。四件事：
+ * 1. 存储只写用户的选择；`system` 也落盘，这样「显式跟随」与「从没选过」不再靠
+ *    键是否存在来区分（旧版本写过的 light/dark 原样认）。
+ * 2. 跟随系统时持续听 prefers-color-scheme——macOS「自动」外观日落切深色，
+ *    开着的 app 也跟着变；钉住之后系统再变不打扰。
  * 3. class 挂在 <html> 上（style.css 的 .dark 变量与 dark: 变体都认它）。
  * 4. 同步**原生窗口外观**：`<html>` 的 class 只对 WebView 内的 CSS 有效，管不到 NSWindow。
  *    macOS 侧栏的 vibrancy 材质（U12）跟随的是窗口外观 —— app 内强制反向主题时不同步，
  *    侧栏会停在系统那一侧（深色主区 + 浅灰侧栏，字都看不清）。跟随系统传 null 交还系统。
  */
-const theme = ref<Theme>(readStored() ?? systemTheme());
+const preference = ref<ThemePreference>(readStoredPreference());
 
-function readStored(): Theme | null {
-  try {
-    const v = localStorage.getItem(STORAGE_KEY);
-    return v === "light" || v === "dark" ? v : null;
-  } catch {
-    return null; // 隐私模式等场景 localStorage 会抛，退化成跟随系统
-  }
-}
+const mq =
+  typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-color-scheme: dark)")
+    : null;
+const systemDark = ref(mq?.matches ?? false);
+mq?.addEventListener("change", (e) => {
+  systemDark.value = e.matches;
+});
 
-function systemTheme(): Theme {
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
+const theme = computed(() => resolveTheme(preference.value, systemDark.value));
 
 watch(
-  theme,
-  (t) => {
-    document.documentElement.classList.toggle("dark", t === "dark");
+  [theme, preference],
+  () => {
+    document.documentElement.classList.toggle("dark", theme.value === "dark");
     syncNativeTheme();
   },
   { immediate: true },
 );
 
-/**
- * 把 WebView 里的主题通报给原生窗口。判据用 readStored() 而不是当前 theme 值：
- * 「用户有没有强制」才是要不要交给系统的依据 —— 存了值就钉住，没存就交还系统。
- * 非 Tauri 环境（浏览器里跑 dev）没有窗口，Linux 不支持该接口，一律吞掉。
- */
+function readStoredPreference(): ThemePreference {
+  try {
+    return parseThemePreference(localStorage.getItem(THEME_STORAGE_KEY));
+  } catch {
+    return "system"; // 隐私模式等场景 localStorage 会抛，退化成跟随系统
+  }
+}
+
+/** 非 Tauri 环境（浏览器里跑 dev）没有窗口，Linux 不支持该接口，一律吞掉。 */
 function syncNativeTheme() {
   try {
     getCurrentWindow()
-      .setTheme(readStored())
+      .setTheme(nativeThemeFor(preference.value))
       .catch(() => {});
   } catch {
     /* 同上：拿不到窗口就不同步，只影响侧栏材质，不影响主区 */
@@ -59,27 +63,14 @@ function syncNativeTheme() {
 }
 
 export function useTheme() {
-  const onSystemChange = (e: MediaQueryListEvent) => {
-    if (!readStored()) theme.value = e.matches ? "dark" : "light";
-  };
-
-  let mq: MediaQueryList | null = null;
-  onMounted(() => {
-    mq = window.matchMedia("(prefers-color-scheme: dark)");
-    mq.addEventListener("change", onSystemChange);
-  });
-  onUnmounted(() => {
-    mq?.removeEventListener("change", onSystemChange);
-  });
-
-  function toggle() {
-    theme.value = theme.value === "dark" ? "light" : "dark";
+  function setPreference(next: ThemePreference) {
+    preference.value = next;
     try {
-      localStorage.setItem(STORAGE_KEY, theme.value);
+      localStorage.setItem(THEME_STORAGE_KEY, next);
     } catch {
-      /* 存不下不影响当前会话显示，下次开机重新跟随系统 */
+      /* 存不下不影响当前会话显示，下次开机回到跟随系统 */
     }
   }
 
-  return { theme, toggle };
+  return { preference, theme, setPreference };
 }

@@ -2,14 +2,17 @@ import { computed, ref } from "vue";
 import { useRoute } from "vue-router";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { toast } from "vue-sonner";
+import { autoScanDue } from "@/lib/autoScan";
 import type { AssetGroup, BootPayload, ScanProgress, ScanResult } from "@/lib/types";
+import { useAutoScan } from "@/composables/useAutoScan";
 
 /**
  * 扫描状态。模块级 ref 天然单例——App 外壳（侧栏、顶栏）和 Assets 视图共享同一份，
  * 不需要 pinia。等真出现「A 页面写入、B 页面响应」的跨页状态再引入。
  */
 const groups = ref<AssetGroup[]>([]);
-/** 是否有任何扫描在进行。首次启动无缓存时会真扫（唯一会自动扫描的场景）。 */
+/** 是否有任何扫描在进行。首次启动无缓存、或缓存过期且设置开启时会自动扫描。 */
 const loading = ref(true);
 /** 仅记录启动/首次加载失败。重扫失败走 toast，不占内容区。 */
 const error = ref<string | null>(null);
@@ -74,20 +77,28 @@ export function useAssets() {
   );
 
   /**
-   * 启动：有缓存直接用，没缓存才扫一次。
+   * 启动：有缓存直接用，没缓存才扫一次；缓存里最旧的分组超过 24 小时时，
+   * 再自动重扫一次（设置页可关，默认开，判据见 lib/autoScan）。
    *
-   * 刻意不在启动时后台自动重扫。实测全量扫描约 26 秒（debug 构建），
-   * 而数据变化很慢——两百多个仓库里近 7 天有提交的只有个位数。
-   * 自动刷新换不来新鲜度（新扫的结果和缓存几乎一样），却让每次打开都啃 20 秒磁盘。
-   * 之后想更新自己点顶栏的「重扫」。
+   * 仍然先出缓存再开扫——首帧不该白等 26 秒。除此之外不做任何启动期扫描：
+   * 数据变化很慢，刷新频率不该跟着打开次数走，24 小时已经够新鲜。
    */
   async function boot() {
     loading.value = true;
     error.value = null;
+    let autoScan = false;
 
     try {
       const payload = await invoke<BootPayload>("bootstrap");
       applySnapshot(payload);
+      const { enabled } = useAutoScan();
+      autoScan = autoScanDue(
+        enabled.value,
+        payload.scanned,
+        payload.group_saved_at,
+        payload.saved_at,
+        Math.floor(Date.now() / 1000),
+      );
     } catch (e) {
       error.value = String(e);
     } finally {
@@ -95,6 +106,23 @@ export function useAssets() {
       progress.value = null;
       scanDoneLabels.value = [];
     }
+
+    if (autoScan) void autoScanAfterBoot();
+  }
+
+  /**
+   * 启动后的自动重扫。先让缓存上屏再开扫；失败保留缓存，只 toast。
+   * 一次启动只由 boot 调一次，不需要额外的「已尝试」标记。
+   *
+   * 用 setTimeout 而不是 rAF：窗口被遮挡 / 最小化时 rAF 会被挂起，扫描要等
+   * 用户回来才开始；定时器在后台仍会走（可能被节流到 1 秒，可接受）。
+   */
+  async function autoScanAfterBoot() {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    if (loading.value) return; // 用户已经发起扫描了，别叠第二次
+    toast.info("缓存已超过 24 小时，正在自动重扫");
+    const r = await rescan();
+    if (!r.ok) toast.error(`自动重扫失败：${r.message}`);
   }
 
   /** 手动重扫：等扫完再返回。成败交回调用方去 toast，这里不碰 UI。 */

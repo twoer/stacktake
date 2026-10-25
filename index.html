@@ -9,7 +9,8 @@
   <body>
     <div id="app"></div>
     <!-- 首帧前定深浅色，否则深色系统下每次开 app 先闪一帧白。
-         逻辑与 src/composables/useTheme.ts 的初始值一致（那边是真相，改这里要同步）。 -->
+         存储里 light / dark 是显式选择，缺省与 system 跟随系统；逻辑与
+         src/lib/theme.ts::parseThemePreference 一致（那边是真相，改这里要同步）。 -->
     <script>
       try {
         var t = localStorage.getItem("stacktake-theme");

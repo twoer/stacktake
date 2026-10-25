@@ -8,9 +8,12 @@ import { toast } from "vue-sonner";
 import { formatAgo } from "@/lib/types";
 import { ISSUES_URL, LICENSE_URL, REPO_URL } from "@/lib/release";
 import { useAssets } from "@/composables/useAssets";
+import { useAutoScan } from "@/composables/useAutoScan";
 import { useRepoRoots } from "@/composables/useRepoRoots";
+import { useTheme } from "@/composables/useTheme";
 import { useUpdate } from "@/composables/useUpdate";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import ByteValue from "@/components/ByteValue.vue";
 import Hint from "@/components/Hint.vue";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -28,6 +31,19 @@ const {
   removeRoot,
 } = useRepoRoots();
 onMounted(() => { void loadRoots(); });
+
+const { enabled: autoScanEnabled, setEnabled: setAutoScanEnabled } = useAutoScan();
+/** reka 的 Checkbox 会额外发 "indeterminate"，这里只有开/关两态。 */
+function onAutoScanChange(value: boolean | "indeterminate") {
+  setAutoScanEnabled(value === true);
+}
+
+const { preference: themePreference, setPreference: setThemePreference } = useTheme();
+const THEME_OPTIONS = [
+  { value: "system", label: "自动（跟随系统）" },
+  { value: "light", label: "浅色" },
+  { value: "dark", label: "深色" },
+] as const;
 
 // 与侧栏共享同一份状态：App.vue 启动那次静默检查的结果这里直接读到，
 // 不重复发请求。手动点「检查更新」才再查一次。
@@ -117,7 +133,42 @@ const dlPct = computed(() => {
 
     <ScrollArea class="min-h-0 flex-1">
       <div class="mx-auto max-w-[600px] space-y-8 px-4 py-5 text-[12px]">
-        <section aria-labelledby="repo-roots-heading" :aria-busy="!!repoRootsPending">
+        <section aria-labelledby="appearance-heading">
+          <h2 id="appearance-heading" class="text-[13px] font-medium">外观</h2>
+          <p class="mt-1 leading-relaxed text-muted-foreground">
+            「自动」跟随系统外观；手动选择后固定。
+          </p>
+          <!-- 原生 radio 保留键盘方向键与读屏语义，视觉收成一条等宽轨道 -->
+          <fieldset class="mt-3">
+            <legend class="sr-only">外观模式</legend>
+            <div
+              class="inline-grid grid-flow-col auto-cols-fr rounded-md border border-border/60 bg-muted/60 p-0.5"
+            >
+              <label
+                v-for="opt in THEME_OPTIONS"
+                :key="opt.value"
+                class="inline-flex h-6 cursor-pointer select-none items-center justify-center rounded-sm px-3 text-xs transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
+                :class="
+                  themePreference === opt.value
+                    ? 'bg-card text-foreground shadow-sm ring-1 ring-border/60'
+                    : 'text-muted-foreground hover:text-foreground'
+                "
+              >
+                <input
+                  type="radio"
+                  name="appearance"
+                  class="sr-only"
+                  :value="opt.value"
+                  :checked="themePreference === opt.value"
+                  @change="setThemePreference(opt.value)"
+                />
+                {{ opt.label }}
+              </label>
+            </div>
+          </fieldset>
+        </section>
+
+        <section aria-labelledby="repo-roots-heading" class="border-t border-border pt-6" :aria-busy="!!repoRootsPending">
           <h2 id="repo-roots-heading" class="text-[13px] font-medium">Git 仓库扫描目录</h2>
           <p class="mt-1 leading-relaxed text-muted-foreground">
             补充仓库所在的父目录，添加或移除后只刷新 Git 仓库。
@@ -173,9 +224,29 @@ const dlPct = computed(() => {
         <section class="border-t border-border pt-6">
           <h2 class="text-[13px] font-medium">缓存</h2>
           <p class="mt-1 leading-relaxed text-muted-foreground">
-            扫描结果存在本机缓存里，启动直接读（毫秒级），只有首次运行或缓存被清才真扫。
+            扫描结果存在本机缓存里，启动直接读（毫秒级）；只有首次运行、缓存被清，
+            或缓存里最旧的分组超过 24 小时时才真扫。
             当前数据更新于 <span class="tabular-nums">{{ cachedAtLabel }}</span>。
           </p>
+          <!-- 勾选框与文案整行可点：for 指向 Checkbox 的 button，label 的激活行为
+               会转成一次 click。别把 click 也挂到外层，否则一次点击切两下。 -->
+          <div class="mt-3 flex items-start gap-2">
+            <Checkbox
+              id="auto-scan"
+              aria-labelledby="auto-scan-label"
+              aria-describedby="auto-scan-hint"
+              :model-value="autoScanEnabled"
+              class="mt-0.5"
+              @update:model-value="onAutoScanChange"
+            />
+            <label for="auto-scan" class="min-w-0 cursor-pointer select-none">
+              <span id="auto-scan-label" class="block text-xs">缓存超过 24 小时时，启动自动重扫</span>
+              <span id="auto-scan-hint" class="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
+                启动先显示缓存，再在后台重扫一次（约 26 秒），期间照常浏览；
+                关掉后只在首次运行或手动重扫时更新。
+              </span>
+            </label>
+          </div>
           <!-- 缓存被清空后的引导态：groups 为空且 cachedAt 为 null 时显示 -->
           <div v-if="!cachedAt && groups.length === 0" class="mt-3 rounded-md border border-border/40 bg-muted/40 px-3 py-2.5">
             <p class="text-xs font-medium text-foreground">缓存已清空</p>
@@ -210,24 +281,6 @@ const dlPct = computed(() => {
             不静默安装：下完自动打开安装包，装不装、什么时候装由你最后一步决定。
           </p>
 
-          <!-- 状态行：idle 不写任何东西。启动那次检查如果失败，这里就是空的，
-               因为失败被刻意静默了；想看具体原因就点一次「检查更新」。 -->
-          <p class="mt-2 leading-relaxed">
-            <template v-if="updateState === 'checking'">
-              <span class="text-muted-foreground">正在检查…</span>
-            </template>
-            <template v-else-if="updateState === 'available'">
-              <span class="text-primary">有新版本 {{ latest }}</span>
-              <span class="text-muted-foreground">—— 点下方「下载」直接获取。</span>
-            </template>
-            <template v-else-if="updateState === 'up-to-date'">
-              <span class="text-muted-foreground">已是最新。</span>
-            </template>
-            <template v-else-if="updateState === 'error'">
-              <span class="text-destructive">检查失败：{{ updateError }}</span>
-            </template>
-          </p>
-
           <!-- 下载进度：节内一条 ScanBar + 12px 正文字号的百分比。
                第一版只有一行 11px 灰字，点完下载按钮消失后附近没有任何显眼信号
                （2026-10-21 用户反馈「不明显」）——现在与扫描进度同一支笔、
@@ -258,7 +311,10 @@ const dlPct = computed(() => {
             下载失败：{{ dlMessage }}
           </p>
 
-          <div class="mt-3 flex items-center gap-1.5">
+          <!-- 检查状态跟在按钮后面（与「补充目录」那行同一形态）：idle 不写任何东西。
+               启动那次检查如果失败，这里就是空的，因为失败被刻意静默了；
+               想看具体原因就点一次「检查更新」。 -->
+          <div class="mt-3 flex flex-wrap items-center gap-2">
             <Button
               variant="outline"
               size="xs"
@@ -277,6 +333,24 @@ const dlPct = computed(() => {
               <Download />
               下载 {{ latest }}
             </Button>
+            <span
+              v-if="updateState !== 'idle'"
+              class="min-w-0 text-[11px] leading-relaxed [overflow-wrap:anywhere]"
+            >
+              <template v-if="updateState === 'checking'">
+                <span class="text-muted-foreground">正在检查…</span>
+              </template>
+              <template v-else-if="updateState === 'available'">
+                <span class="text-primary">有新版本 {{ latest }}</span>
+                <span class="text-muted-foreground">—— 点「下载」直接获取。</span>
+              </template>
+              <template v-else-if="updateState === 'up-to-date'">
+                <span class="text-muted-foreground">已是最新。</span>
+              </template>
+              <template v-else-if="updateState === 'error'">
+                <span class="text-destructive">检查失败：{{ updateError }}</span>
+              </template>
+            </span>
           </div>
           <p class="mt-2 text-[11px] leading-relaxed text-muted-foreground">
             安装包下载到「下载」文件夹并自动打开。检查与下载都不经浏览器：检查只请求
