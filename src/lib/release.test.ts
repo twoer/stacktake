@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { isNewer } from "@/lib/release";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { checkForUpdate, isNewer } from "@/lib/release";
 
 // 版本比较直接决定设置页「有没有新版」：漏报是错过修复，误报是让用户白装一遍。
 // 本项目 tag 不搞预发布后缀，segments 刻意把后缀剥掉、缺失段视作 0。
@@ -22,5 +22,33 @@ describe("isNewer", () => {
     expect(isNewer("1.0", "1.0.0")).toBe(false);
     expect(isNewer("v1.0.0-beta", "1.0.0")).toBe(false);
     expect(isNewer("0.2", "0.1.9")).toBe(true);
+  });
+});
+
+describe("checkForUpdate —— 本工具唯一一次对外请求的状态机", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("404 = 仓库还没有 release，按无更新处理而不是出错", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) })));
+    expect(await checkForUpdate("0.1.8")).toEqual({ kind: "up-to-date", current: "0.1.8" });
+  });
+
+  it("有更新返回 available，latest 保留 tag 原文（v 前缀交给 isNewer 剥）", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ tag_name: "v0.2.0" }) })));
+    expect(await checkForUpdate("0.1.8")).toEqual({ kind: "available", current: "0.1.8", latest: "v0.2.0" });
+  });
+
+  it("同版本不报更新；tag_name 缺失或空白报错误", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ tag_name: "v0.1.8" }) })));
+    expect(await checkForUpdate("0.1.8")).toEqual({ kind: "up-to-date", current: "0.1.8" });
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) })));
+    expect(await checkForUpdate("0.1.8")).toEqual({ kind: "error", message: "响应里没有 tag_name" });
+  });
+
+  it("非 404 的非 2xx 报错误；fetch 抛错（断网 / 超时）转成 error 结果而不冒异常", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })));
+    expect(await checkForUpdate("0.1.8")).toEqual({ kind: "error", message: "GitHub 返回 500" });
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network down"); }));
+    expect(await checkForUpdate("0.1.8")).toEqual({ kind: "error", message: "network down" });
   });
 });
