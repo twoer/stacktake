@@ -42,6 +42,8 @@ export function useRepoRoots() {
     progress.value = null;
     error.value = null;
     let next: ScanResult | null = null;
+    /** 操作本身的失败。finally 里那次重读若失败，只会记在 error.value，不混进这条。 */
+    let failure: string | null = null;
     try {
       next = action === "adding"
         ? await invoke<ScanResult | null>("add_repo_root")
@@ -49,12 +51,13 @@ export function useRepoRoots() {
       if (next) applySnapshot(next);
     } catch (e) {
       if (e && typeof e === "object" && "message" in e && "snapshot" in e) {
-        const failure = e as RepoRootsError;
-        if (failure.snapshot) applySnapshot(failure.snapshot);
-        error.value = failure.message;
+        const asError = e as RepoRootsError;
+        if (asError.snapshot) applySnapshot(asError.snapshot);
+        failure = asError.message;
       } else {
-        error.value = String(e);
+        failure = String(e);
       }
+      error.value = failure;
     } finally {
       await readRoots();
       loading.value = false;
@@ -62,12 +65,17 @@ export function useRepoRoots() {
       pending.value = null;
     }
 
-    if (error.value) {
-      toast.error(error.value);
+    // 成败只看操作本身。成功路径上 finally 的重读若失败，error.value 会被
+    // readRoots 填上——配置与快照其实都已生效，不能把它盖成「操作失败」，
+    // 但也不能吞掉：成功 toast 之后补一条单独的错误 toast，列表刷新靠
+    // 错误块里的「重新读取目录」。
+    if (failure) {
+      toast.error(failure);
     } else if (next) {
       toast.success(action === "adding"
         ? "已补充目录 · Git 仓库已刷新"
         : "已取消扫描该目录 · 未删除文件 · Git 仓库已刷新");
+      if (error.value) toast.error(error.value);
     }
     // null 只表示取消原生选择器，不扫描，也不提示成功。
   }
