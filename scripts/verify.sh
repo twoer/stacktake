@@ -93,8 +93,9 @@ summary() {
   printf '  前端单测     → npm run test:unit（vitest，用例在 src/lib/*.test.ts）\n'
   printf '  rust 测试     → cd src-tauri && cargo test；只跑某组用 cargo test <关键字>\n'
   printf '  前端构建      → npm run build\n'
-  printf '  快照契约评估  → node scripts/check-snapshot-contract.mjs <snapshot.json>\n'
-  printf '  文档门禁      → node scripts/check-docs.mjs --self-test && node scripts/check-docs.mjs\n'
+printf '  快照契约评估  → node scripts/check-snapshot-contract.mjs <snapshot.json>\n'
+printf '  目录对等      → node scripts/check-i18n.mjs --self-test && node scripts/check-i18n.mjs\n'
+printf '  文档门禁      → node scripts/check-docs.mjs --self-test && node scripts/check-docs.mjs\n'
   return 1
 }
 
@@ -120,6 +121,11 @@ fe_type()   { (cd "$ROOT" && npx --no-install vue-tsc --noEmit); }
 fe_unit()   { (cd "$ROOT" && npm run test:unit); }
 fe_build()  { (cd "$ROOT" && npm run build); }
 contract_selftest() { node "$ROOT/scripts/check-snapshot-contract.mjs" --self-test; }
+i18n_gate() {
+  # 目录对等（P4）同样先自检再查仓库：坏样本抓不住的门禁等于没有
+  node "$ROOT/scripts/check-i18n.mjs" --self-test &&
+    node "$ROOT/scripts/check-i18n.mjs"
+}
 docs_gate() {
   # 文档门禁同样先自检再查仓库：坏样本抓不住的门禁等于没有
   node "$ROOT/scripts/check-docs.mjs" --self-test &&
@@ -148,6 +154,8 @@ run "前端类型检查"  fe_type   || { summary; exit 1; }
 run "前端单测"     fe_unit   || { summary; exit 1; }
 # 校验器自己挂了比没有校验器更危险，所以自检留在内环；文档门禁同理
 run "契约校验器自检" contract_selftest || { summary; exit 1; }
+# 五份语言目录的键集对等（P4）：`.one` 有意不对称由白名单钉住，别拉平
+run "目录对等" i18n_gate || { summary; exit 1; }
 run "文档门禁" docs_gate || { summary; exit 1; }
 
 if [[ "$MODE" == quick ]]; then

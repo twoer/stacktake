@@ -131,7 +131,7 @@ G3 起 toolchain 组里有版本管理器（nvm / fnm / volta / pyenv / conda / 
 
 | 档位 | 命令 | 内容 | 耗时 |
 |---|---|---|---|
-| 内环 | `npm run verify:quick` | rustfmt + clippy（`-D warnings`）+ vue-tsc + 前端单测（vitest 逻辑层）+ 契约校验器自检 + 文档门禁 | 约 10 秒 |
+| 内环 | `npm run verify:quick` | rustfmt + clippy（`-D warnings`）+ vue-tsc + 前端单测 + 契约校验器自检 + 目录对等 + 文档门禁 | 约 10 秒 |
 | 外环 | `npm run verify` | 内环 + 测试（有 nextest 用 nextest，否则 `cargo test`）+ `vite build` | 约 20 秒 |
 | 评估 | `npm run verify:full` | 外环 + 全量扫描 + 快照契约校验 | 约 45 秒 |
 
