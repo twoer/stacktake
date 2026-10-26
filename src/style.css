@@ -464,7 +464,12 @@ html.macos body {
 }
 /* 单组重扫没有中间比例可画（只有 0→1 两个事件），比例条原地 0% 像坏了：
    一小段墨线来回扫，表达「在进行」。translateX 按填充段自身宽度算，
-   -110% ~ 370% 正好从线左端扫到右端。 */
+   -110% ~ 370% 正好从线左端扫到右端——两端都在线外，必须由这里裁掉：
+   基类为笔尖留的 overflow: visible 在这不适用（indeterminate 不渲染笔尖），
+   不裁则越界段压在侧栏上（z-index: 2 在 aside 之上）。 */
+.scanbar--indet {
+  overflow: hidden;
+}
 .scanbar--indet .scanfill {
   width: 30%;
   animation: scan-indet 1.1s ease-in-out infinite;
