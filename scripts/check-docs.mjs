@@ -34,9 +34,9 @@ const BUDGETS = [
   // 不做药丸 / 侧栏无图标 / 不自我解释，删过别加回来）与 H14 隐藏分组的恢复步骤；
   // 已先把本段其它表述压到最短，仍差 40 字符，才动数字。
   { file: "AGENTS.md", max: 17_800 },
-  // 11_400：2026-10-26 同日三刀（M1 / N1 / M2）的登记与收口说明累积在此；
+  // 12_400：2026-10-26 同日四刀（M1 / N1 / M2 / M3）的登记与收口说明累积；
   // M1 归档时随首次归档回落。细节都在 docs/evidence/，backlog 只留结论。
-  { file: "docs/backlog.md", max: 11_400 },
+  { file: "docs/backlog.md", max: 12_400 },
   { file: "docs/backlog-archive.md", max: 8_000 },
 ];
 
@@ -243,7 +243,7 @@ function selfTest() {
   const cases = [
     ["基线通过", () => {}, null],
     ["AGENTS 预算", (root) => write(root, "AGENTS.md", "x".repeat(17_801)), "超过预算"],
-    ["backlog 预算", (root) => write(root, "docs/backlog.md", "x".repeat(11_401)), "超过预算"],
+    ["backlog 预算", (root) => write(root, "docs/backlog.md", "x".repeat(12_401)), "超过预算"],
     ["索引预算", (root) => write(root, "docs/backlog-archive.md", "x".repeat(8_001)), "超过预算"],
     [
       "缺少刀的索引行",

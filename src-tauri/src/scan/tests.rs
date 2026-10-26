@@ -1888,7 +1888,7 @@ Host gamma
         for (label, rel) in ai_specs_for_test() {
             assert!(
                 rel.starts_with('.'),
-                "{label} 的 {rel} 不是 dot-dir：平台专属布局该进 READ_ONLY_SPECS / EDITOR_SPECS"
+                "{label} 的 {rel} 不是 dot-dir：平台专属布局该进 PLATFORM_SPECS 两栏形态"
             );
             assert!(
                 !rel.contains('\\'),

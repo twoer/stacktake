@@ -106,7 +106,11 @@ use std::path::{Path, PathBuf};
 ///
 /// **第十四种：ai_tools 白名单第二批**（M2，23 → 24）。AI_SPECS +4、READ_ONLY_SPECS
 /// +1（Zed），同第十三种的理由。
-pub const SCHEMA_VERSION: u32 = 24;
+///
+/// **第十五种：两栏表合并 + goose 进表**（M3，24 → 25）。`EDITOR_SPECS` /
+/// `READ_ONLY_SPECS` 合并为 `PLATFORM_SPECS`（清理开关下放到条目，win 侧补
+/// Option），goose 两条新进——扫描范围变了，同第十三种的理由跳版本。
+pub const SCHEMA_VERSION: u32 = 25;
 
 const CACHE_FILE: &str = "scan-cache.json";
 

@@ -251,79 +251,104 @@ const AI_SPECS: [(&str, &str); 20] = [
     ("opencode 配置", ".config/opencode"),
 ];
 
-/// 编辑器数据（G1 新增）。(标签, macOS 相对 home, Windows 相对 home)
+/// 分平台两栏表。(标签, macOS 相对 home 或 None, Windows 相对 home 或 None, 是否开放清理)
 ///
-/// 为什么单列一张表：VS Code 与 JetBrains 的数据目录**两边平台完全不同**
-/// （`~/Library/Application Support/Code` vs `%APPDATA%\Code`），必须显式给出，
-/// 不能像 dot-dir 那样只写一条。（硬约束 9：平台是传进来的值，不是 `cfg`。）
-const EDITOR_SPECS: [(&str, &str, &str); 4] = [
+/// M3（2026-10-26）由 `EDITOR_SPECS` / `READ_ONLY_SPECS` 合并而来：两张表唯一的
+/// 差别就是那个清理开关，拆两张是历史产物；win 侧补 Option 后，单平台路径显式
+/// 留空即可，不必为凑齐两栏编造路径。顺序即行序，**别重排现有条目**（空间记忆
+/// 会丢）。（硬约束 9：平台是传进来的值，不是 `cfg`。）
+const PLATFORM_SPECS: [(&str, Option<&str>, Option<&str>, bool); 22] = [
     // VS Code 的扩展装在 `~/.vscode/extensions`，与用户数据分开
-    ("VS Code 扩展", ".vscode", ".vscode"),
+    ("VS Code 扩展", Some(".vscode"), Some(".vscode"), true),
     (
         "VS Code",
-        "Library/Application Support/Code",
-        "AppData/Roaming/Code",
+        Some("Library/Application Support/Code"),
+        Some("AppData/Roaming/Code"),
+        true,
     ),
     (
         "JetBrains 配置",
-        "Library/Application Support/JetBrains",
-        "AppData/Roaming/JetBrains",
+        Some("Library/Application Support/JetBrains"),
+        Some("AppData/Roaming/JetBrains"),
+        true,
     ),
     (
         "JetBrains 缓存",
-        "Library/Caches/JetBrains",
-        "AppData/Local/JetBrains",
+        Some("Library/Caches/JetBrains"),
+        Some("AppData/Local/JetBrains"),
+        true,
     ),
-];
-
-// None 表示没有单独的 macOS 映射，不把 Windows 目录布局套过去。
-const READ_ONLY_SPECS: [(&str, Option<&str>, &str); 16] = [
-    ("DeepSeek Harness", Some(".dsh"), ".dsh"),
+    ("DeepSeek Harness", Some(".dsh"), Some(".dsh"), false),
     (
         "DeepSeek Harness 桌面版",
         Some("Library/Application Support/@deepseek-ai/dsh-desktop"),
-        "AppData/Roaming/@deepseek-ai/dsh-desktop",
+        Some("AppData/Roaming/@deepseek-ai/dsh-desktop"),
+        false,
     ),
     (
         "Warp",
         Some(
             "Library/Group Containers/2BBY89MBSN.dev.warp/Library/Application Support/dev.warp.Warp-Stable",
         ),
-        "AppData/Local/warp/Warp/data",
+        Some("AppData/Local/warp/Warp/data"),
+        false,
     ),
-    ("Warp 配置", Some(".warp"), "AppData/Roaming/warp/Warp/data"),
-    ("Warp 本地配置", None, "AppData/Local/warp/Warp/config"),
-    ("OpenClaw", Some(".openclaw"), ".openclaw"),
-    ("ZCode", Some(".zcode"), ".zcode"),
+    (
+        "Warp 配置",
+        Some(".warp"),
+        Some("AppData/Roaming/warp/Warp/data"),
+        false,
+    ),
+    (
+        "Warp 本地配置",
+        None,
+        Some("AppData/Local/warp/Warp/config"),
+        false,
+    ),
+    ("OpenClaw", Some(".openclaw"), Some(".openclaw"), false),
+    ("ZCode", Some(".zcode"), Some(".zcode"), false),
     (
         "ZCode 桌面版",
         Some("Library/Application Support/ZCode"),
-        "AppData/Roaming/ZCode",
+        Some("AppData/Roaming/ZCode"),
+        false,
     ),
-    ("灵码", Some(".lingma"), ".lingma"),
-    ("灵码 本地数据", None, "AppData/Local/.lingma"),
-    ("Qwen Agent", None, ".qwen-agent"),
-    ("Qoder CLI", None, ".qoder-cli"),
+    ("灵码", Some(".lingma"), Some(".lingma"), false),
+    ("灵码 本地数据", None, Some("AppData/Local/.lingma"), false),
+    ("Qwen Agent", None, Some(".qwen-agent"), false),
+    ("Qoder CLI", None, Some(".qoder-cli"), false),
     (
         "Qoder 桌面版",
         Some("Library/Application Support/com.qoder.app.stable"),
-        "AppData/Roaming/com.qoder.app.stable",
+        Some("AppData/Roaming/com.qoder.app.stable"),
+        false,
     ),
-    ("Qoder IDE", None, "AppData/Roaming/Qoder"),
+    ("Qoder IDE", None, Some("AppData/Roaming/Qoder"), false),
     // Claude 桌面版的 Electron 数据（缓存能上 GB）。macOS 侧本机核过；Windows
     // 侧按 Electron 惯例推导（%APPDATA%\Claude），待实机核对。
     (
         "Claude 桌面版",
         Some("Library/Application Support/Claude"),
-        "AppData/Roaming/Claude",
+        Some("AppData/Roaming/Claude"),
+        false,
     ),
     // Zed 的对话在数据目录的 SQLite 里（索引类，本就不可清），扩展与日志同根，
     // 整体只统计。两栏出自官方 CLI 文档（zed.dev/docs/reference/cli）。
     (
         "Zed",
         Some("Library/Application Support/Zed"),
-        "AppData/Local/Zed",
+        Some("AppData/Local/Zed"),
+        false,
     ),
+    // goose（M3）。配置侧官方文档双平台核过；数据侧 Windows 无官方口径、
+    // macOS 的 Library 侧只有第三方线索，都显式留空待实机核。
+    (
+        "Goose 配置",
+        Some(".config/goose"),
+        Some("AppData/Roaming/Block/goose/config"),
+        true,
+    ),
+    ("Goose 数据", Some(".local/share/goose"), None, true),
 ];
 
 /// 测试专用：把白名单条目交出去，钉「两边平台路径相同」这条注释承诺（M1）。
@@ -337,10 +362,17 @@ pub(crate) fn tools_for(home: &Path, platform: Platform) -> Vec<Tool> {
     let mut tools: Vec<Tool> = Vec::new();
     let mut jb_cache: Option<PathBuf> = None;
 
-    for (label, mac, win) in EDITOR_SPECS {
+    for (label, mac, win, allow_clean) in PLATFORM_SPECS {
+        // None 表示该平台没有已核实的映射，不把另一平台的目录布局套过去。
         let rel = if platform.is_windows() { win } else { mac };
+        let Some(rel) = rel else { continue };
         let root = home.join(rel);
-        if !root.exists() {
+        // `symlink_metadata` 不跟随链接：根自己是指向别处的软链时，体积与归属
+        // 都是错的（与 collect_entries 对一级条目的处理同口径）。
+        let Ok(md) = std::fs::symlink_metadata(&root) else {
+            continue;
+        };
+        if !md.is_dir() || md.file_type().is_symlink() {
             continue;
         }
         if label == "JetBrains 缓存" {
@@ -349,9 +381,9 @@ pub(crate) fn tools_for(home: &Path, platform: Platform) -> Vec<Tool> {
             continue;
         }
         tools.push(Tool {
-            label: label.into(),
+            label: (*label).into(),
             root,
-            allow_clean: true,
+            allow_clean,
         });
     }
 
@@ -369,22 +401,6 @@ pub(crate) fn tools_for(home: &Path, platform: Platform) -> Vec<Tool> {
             root,
             allow_clean: true,
         })
-    }));
-
-    tools.extend(READ_ONLY_SPECS.iter().filter_map(|(label, mac, win)| {
-        let rel = if platform.is_windows() {
-            Some(*win)
-        } else {
-            *mac
-        }?;
-        let root = home.join(rel);
-        std::fs::symlink_metadata(&root)
-            .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
-            .then(|| Tool {
-                label: (*label).into(),
-                root,
-                allow_clean: false,
-            })
     }));
 
     tools
