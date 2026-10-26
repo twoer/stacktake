@@ -103,7 +103,10 @@ use std::path::{Path, PathBuf};
 /// **第十三种：ai_tools 白名单扩充**（M1，22 → 23）。AI_SPECS +6、READ_ONLY_SPECS
 /// +1——启动是「有缓存直接返回」，版本不跳的话，装了这些工具的老用户拿到的旧快照
 /// 里永远缺这几行，界面上没有任何提示让他点「重扫」（硬约束 2 的同款理由）。
-pub const SCHEMA_VERSION: u32 = 23;
+///
+/// **第十四种：ai_tools 白名单第二批**（M2，23 → 24）。AI_SPECS +4、READ_ONLY_SPECS
+/// +1（Zed），同第十三种的理由。
+pub const SCHEMA_VERSION: u32 = 24;
 
 const CACHE_FILE: &str = "scan-cache.json";
 

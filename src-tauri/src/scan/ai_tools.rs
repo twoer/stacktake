@@ -216,14 +216,18 @@ pub(crate) fn classify(name: &str) -> Category {
 /// AI 工具白名单。只在已知路径里扫，不 glob `~/.*`——否则会误伤 `.ssh`、`.aws`
 /// 这类结构相似但高度敏感的目录。
 ///
-/// 这十六条都是 dot-dir，**两边平台路径相同**（macOS / Linux 与 Windows 一样），
+/// 这二十条都是 dot-dir，**两边平台路径相同**（macOS / Linux 与 Windows 一样），
 /// 所以不拆两栏；需要分平台的是下面的编辑器数据目录。
 ///
 /// M1（2026-10-26）补的是面向一般用户的覆盖缺口：Trae 的国内版是另一个目录
 /// （`.trae-cn`），`.codeium` 是 Windsurf 引擎与索引的另一半，Qwen Code / Kimi
 /// Code / CodeBuddy 是装机量大且此前零覆盖的 CLI。Qwen 与 Kimi 的目录出自各自
 /// 官方文档，其余本机（macOS）核过；Windows 侧按 dot-dir 惯例推导，待实机核对。
-const AI_SPECS: [(&str, &str); 16] = [
+///
+/// M2（2026-10-26）第二批：Copilot CLI / Droid（Factory）/ Crush / Antigravity，
+/// 同为 dot-dir；核实来源见 `docs/evidence/M2.md`。goose 与 Zed 的 Windows 布局
+/// 与 macOS 不同构，进不了这张单栏表——Zed 在 READ_ONLY_SPECS，goose 留待定表形。
+const AI_SPECS: [(&str, &str); 20] = [
     ("WorkBuddy", ".workbuddy"),
     ("Codex", ".codex"),
     ("Windsurf", ".windsurf"),
@@ -238,6 +242,10 @@ const AI_SPECS: [(&str, &str); 16] = [
     ("Qwen Code", ".qwen"),
     ("CodeBuddy", ".codebuddy"),
     ("CodeBuddy CN", ".codebuddycn"),
+    ("Copilot CLI", ".copilot"),
+    ("Droid", ".factory"),
+    ("Crush", ".crush"),
+    ("Antigravity", ".antigravity"),
     ("opencode", ".local/share/opencode"),
     // opencode 的配置在 XDG 配置目录，数据在数据目录，两个都要看
     ("opencode 配置", ".config/opencode"),
@@ -269,7 +277,7 @@ const EDITOR_SPECS: [(&str, &str, &str); 4] = [
 ];
 
 // None 表示没有单独的 macOS 映射，不把 Windows 目录布局套过去。
-const READ_ONLY_SPECS: [(&str, Option<&str>, &str); 15] = [
+const READ_ONLY_SPECS: [(&str, Option<&str>, &str); 16] = [
     ("DeepSeek Harness", Some(".dsh"), ".dsh"),
     (
         "DeepSeek Harness 桌面版",
@@ -308,6 +316,13 @@ const READ_ONLY_SPECS: [(&str, Option<&str>, &str); 15] = [
         "Claude 桌面版",
         Some("Library/Application Support/Claude"),
         "AppData/Roaming/Claude",
+    ),
+    // Zed 的对话在数据目录的 SQLite 里（索引类，本就不可清），扩展与日志同根，
+    // 整体只统计。两栏出自官方 CLI 文档（zed.dev/docs/reference/cli）。
+    (
+        "Zed",
+        Some("Library/Application Support/Zed"),
+        "AppData/Local/Zed",
     ),
 ];
 
