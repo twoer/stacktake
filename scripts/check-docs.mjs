@@ -34,10 +34,11 @@ const BUDGETS = [
   // 不做药丸 / 侧栏无图标 / 不自我解释，删过别加回来）与 H14 隐藏分组的恢复步骤；
   // 已先把本段其它表述压到最短，仍差 40 字符，才动数字。
   { file: "AGENTS.md", max: 17_800 },
-  // 12_400：2026-10-26 同日四刀（M1 / N1 / M2 / M3）的登记与收口说明累积；
-  // M1 归档时随首次归档回落。细节都在 docs/evidence/，backlog 只留结论。
-  { file: "docs/backlog.md", max: 12_400 },
-  { file: "docs/backlog-archive.md", max: 8_000 },
+  // 9_000：2026-10-26 归档 T / L / N 三 Track 后回落（曾因同日五刀累积冲到 12_400）。
+  // 活页 = 头部规则 + V1 段 + Track I（撞号留页）+ Track M（活 Track）+ 遗留清单。
+  { file: "docs/backlog.md", max: 9_000 },
+  // 11_500：2026-10-26 收编 T / L / N 三个 Track 的正文与索引行。
+  { file: "docs/backlog-archive.md", max: 11_500 },
 ];
 
 const LIVE_DOCS = [
@@ -243,8 +244,8 @@ function selfTest() {
   const cases = [
     ["基线通过", () => {}, null],
     ["AGENTS 预算", (root) => write(root, "AGENTS.md", "x".repeat(17_801)), "超过预算"],
-    ["backlog 预算", (root) => write(root, "docs/backlog.md", "x".repeat(12_401)), "超过预算"],
-    ["索引预算", (root) => write(root, "docs/backlog-archive.md", "x".repeat(8_001)), "超过预算"],
+    ["backlog 预算", (root) => write(root, "docs/backlog.md", "x".repeat(9_001)), "超过预算"],
+    ["索引预算", (root) => write(root, "docs/backlog-archive.md", "x".repeat(11_501)), "超过预算"],
     [
       "缺少刀的索引行",
       (root) => {
