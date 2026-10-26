@@ -99,7 +99,11 @@ use std::path::{Path, PathBuf};
 /// 但基线是空的，差额一栏会静默消失。与第十种给 `extra_repo_roots` 留的备注同理：
 /// 带 default 的静默缺失正是要跳版本防的陷阱，不跳的话老用户在界面上看不出
 /// 「没有差额」是「没有基线」还是「功能坏了」，还以为下次扫描就会补上。
-pub const SCHEMA_VERSION: u32 = 22;
+///
+/// **第十三种：ai_tools 白名单扩充**（M1，22 → 23）。AI_SPECS +6、READ_ONLY_SPECS
+/// +1——启动是「有缓存直接返回」，版本不跳的话，装了这些工具的老用户拿到的旧快照
+/// 里永远缺这几行，界面上没有任何提示让他点「重扫」（硬约束 2 的同款理由）。
+pub const SCHEMA_VERSION: u32 = 23;
 
 const CACHE_FILE: &str = "scan-cache.json";
 

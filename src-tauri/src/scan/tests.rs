@@ -11,7 +11,9 @@ mod harness {
     use crate::scan::ai_tools::{AiToolsScanner, Category, classify};
     #[cfg(unix)]
     use crate::scan::ai_tools::{AiToolsScanner, Category, classify, collect_entries_for_test};
-    use crate::scan::ai_tools::{ai_id, clean_candidates, parse_ai_id};
+    use crate::scan::ai_tools::{
+        ai_id, ai_specs_for_test, clean_candidates, parse_ai_id, tools_for,
+    };
     use crate::scan::dev_env::{
         DevEnvScanner, JavaScanner, dev_env_scanners, gradle_version_for_test,
         jdk_version_for_test, maven_rows_for_test, version_major_for_test,
@@ -1875,6 +1877,41 @@ Host gamma
         for (name, want) in cases {
             assert_eq!(classify(name), *want, "classify({:?}) 判错", name);
         }
+    }
+
+    /// AI_SPECS 注释承诺「两边平台路径相同」，这条把它从注释变成断言（M1）：
+    /// 条目必须都是 dot-dir（`Library/` 这类 macOS 专有布局进不来），且造齐全部
+    /// 目录后，同一假 home 在两个平台下命中的条目数都等于表长——谁把 AI_SPECS
+    /// 分支改成平台条件化、或塞进平台专属路径，这里会红（该走两栏形态的那两张表）。
+    #[test]
+    fn ai_tools_ai_specs_are_cross_platform_dot_dirs() {
+        for (label, rel) in ai_specs_for_test() {
+            assert!(
+                rel.starts_with('.'),
+                "{label} 的 {rel} 不是 dot-dir：平台专属布局该进 READ_ONLY_SPECS / EDITOR_SPECS"
+            );
+            assert!(
+                !rel.contains('\\'),
+                "{label} 的 {rel} 不该写 Windows 分隔符"
+            );
+        }
+
+        let home = temp_dir("ai-specs-home");
+        for (_, rel) in ai_specs_for_test() {
+            std::fs::create_dir_all(home.join(rel)).unwrap();
+        }
+        let specs = ai_specs_for_test().len();
+        assert_eq!(
+            tools_for(&home, Platform::Mac).len(),
+            specs,
+            "macOS 下 AI_SPECS 条目应全部命中"
+        );
+        assert_eq!(
+            tools_for(&home, Platform::Windows).len(),
+            specs,
+            "Windows 下 AI_SPECS 条目应全部命中——两边平台同路径是这张表的承诺"
+        );
+        std::fs::remove_dir_all(&home).ok();
     }
 
     /// 结果层：扫描结果里不该出现任何凭据片段。

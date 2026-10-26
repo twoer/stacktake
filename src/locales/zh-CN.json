@@ -352,6 +352,7 @@
   "data.tool.jetbrainsConfig": "JetBrains 配置",
   "data.tool.jetbrainsCache": "JetBrains 缓存",
   "data.tool.deepseekDesktop": "DeepSeek Harness 桌面版",
+  "data.tool.claudeDesktop": "Claude 桌面版",
   "data.tool.warpConfig": "Warp 配置",
   "data.tool.warpLocalConfig": "Warp 本地配置",
   "data.tool.zcodeDesktop": "ZCode 桌面版",

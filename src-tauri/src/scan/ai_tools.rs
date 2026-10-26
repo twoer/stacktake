@@ -216,17 +216,28 @@ pub(crate) fn classify(name: &str) -> Category {
 /// AI 工具白名单。只在已知路径里扫，不 glob `~/.*`——否则会误伤 `.ssh`、`.aws`
 /// 这类结构相似但高度敏感的目录。
 ///
-/// 这十条都是 dot-dir，**两边平台路径相同**（macOS / Linux 与 Windows 一样），
+/// 这十六条都是 dot-dir，**两边平台路径相同**（macOS / Linux 与 Windows 一样），
 /// 所以不拆两栏；需要分平台的是下面的编辑器数据目录。
-const AI_SPECS: [(&str, &str); 10] = [
+///
+/// M1（2026-10-26）补的是面向一般用户的覆盖缺口：Trae 的国内版是另一个目录
+/// （`.trae-cn`），`.codeium` 是 Windsurf 引擎与索引的另一半，Qwen Code / Kimi
+/// Code / CodeBuddy 是装机量大且此前零覆盖的 CLI。Qwen 与 Kimi 的目录出自各自
+/// 官方文档，其余本机（macOS）核过；Windows 侧按 dot-dir 惯例推导，待实机核对。
+const AI_SPECS: [(&str, &str); 16] = [
     ("WorkBuddy", ".workbuddy"),
     ("Codex", ".codex"),
     ("Windsurf", ".windsurf"),
+    ("Codeium", ".codeium"),
     ("Qoder", ".qoder"),
     ("Trae", ".trae"),
+    ("Trae CN", ".trae-cn"),
     ("Cursor", ".cursor"),
     ("Claude", ".claude"),
     ("Gemini", ".gemini"),
+    ("Kimi Code", ".kimi-code"),
+    ("Qwen Code", ".qwen"),
+    ("CodeBuddy", ".codebuddy"),
+    ("CodeBuddy CN", ".codebuddycn"),
     ("opencode", ".local/share/opencode"),
     // opencode 的配置在 XDG 配置目录，数据在数据目录，两个都要看
     ("opencode 配置", ".config/opencode"),
@@ -258,7 +269,7 @@ const EDITOR_SPECS: [(&str, &str, &str); 4] = [
 ];
 
 // None 表示没有单独的 macOS 映射，不把 Windows 目录布局套过去。
-const READ_ONLY_SPECS: [(&str, Option<&str>, &str); 14] = [
+const READ_ONLY_SPECS: [(&str, Option<&str>, &str); 15] = [
     ("DeepSeek Harness", Some(".dsh"), ".dsh"),
     (
         "DeepSeek Harness 桌面版",
@@ -291,7 +302,21 @@ const READ_ONLY_SPECS: [(&str, Option<&str>, &str); 14] = [
         "AppData/Roaming/com.qoder.app.stable",
     ),
     ("Qoder IDE", None, "AppData/Roaming/Qoder"),
+    // Claude 桌面版的 Electron 数据（缓存能上 GB）。macOS 侧本机核过；Windows
+    // 侧按 Electron 惯例推导（%APPDATA%\Claude），待实机核对。
+    (
+        "Claude 桌面版",
+        Some("Library/Application Support/Claude"),
+        "AppData/Roaming/Claude",
+    ),
 ];
+
+/// 测试专用：把白名单条目交出去，钉「两边平台路径相同」这条注释承诺（M1）。
+/// 运行时入口是 [`tools_for`]，别绕过它直接读这张表。
+#[cfg(test)]
+pub(crate) fn ai_specs_for_test() -> &'static [(&'static str, &'static str)] {
+    &AI_SPECS
+}
 
 pub(crate) fn tools_for(home: &Path, platform: Platform) -> Vec<Tool> {
     let mut tools: Vec<Tool> = Vec::new();
@@ -452,6 +477,7 @@ fn tool_text(label: &str) -> Text {
         "JetBrains 配置" => "jetbrainsConfig",
         "JetBrains 缓存" => "jetbrainsCache",
         "DeepSeek Harness 桌面版" => "deepseekDesktop",
+        "Claude 桌面版" => "claudeDesktop",
         "Warp 配置" => "warpConfig",
         "Warp 本地配置" => "warpLocalConfig",
         "ZCode 桌面版" => "zcodeDesktop",
