@@ -93,6 +93,8 @@
   "assets.autoScanFailed": "自动重扫失败：{message}",
   "assets.busy": "正在扫描或更新目录，请稍后再试",
   "assets.scanProgress": "扫描进度",
+  "assets.deltaVsPrev": "较上次 {delta}",
+  "assets.deltaHint": "逐组与该组上一次扫描对比；单组重扫只更新该组基线",
 
   "inspector.clean": "清理",
   "inspector.cleanArtifacts": "清理产物",
@@ -109,6 +111,7 @@
   "inspector.rule3": "编辑器与 AI 工具按「工具 × 类别」清日志 / 会话 / 缓存；会话含完整对话记录，删除后不会自动重建。",
   "inspector.readOnly": "本组只读：账面可回收不等于有删除入口。",
   "inspector.reclaimable": "可回收",
+  "inspector.deltaBaselineHint": "与 {ago} 前的扫描对比",
 
   "clean.title": "移入废纸篓",
   "clean.repoBody": "将把整个仓库目录（连同源码与 .git 历史）移入废纸篓，之后可以从废纸篓恢复。",

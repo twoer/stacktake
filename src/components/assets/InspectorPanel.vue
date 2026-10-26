@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { ChevronRight, FolderOpen, Trash2 } from "@lucide/vue";
-import type { AssetGroup, Item, Text } from "@/lib/types";
-import { artifactBytes, groupReclaimable, itemSize, reclaimableOf } from "@/lib/types";
+import { ArrowDownRight, ArrowUpRight, ChevronRight, FolderOpen, Trash2 } from "@lucide/vue";
+import type { AssetGroup, Item, PrevLedger, Text } from "@/lib/types";
+import { artifactBytes, groupReclaimable, groupSize, itemSize, reclaimableOf, formatAgo } from "@/lib/types";
+import { groupDeltaOf, formatSignedBytes, itemDeltaOf } from "@/lib/delta";
 import { artifactRowsOf, canCleanArtifactsItem, canCleanItem, cell, isBlockerTag, orderedTags, tagHint } from "@/lib/assets";
 import { rowFullName } from "@/lib/rows";
 import { renderText, t } from "@/lib/i18n";
@@ -26,6 +27,8 @@ const props = defineProps<{
   selectedRow: Item | null;
   /** 可回收列是否独立（表格共用口径，父算好传入）。 */
   splitReclaim: boolean;
+  /** 上一版基线（差额台账，L1）。缺省 = 无基线，两处差额都不渲染。 */
+  prev?: PrevLedger | null;
 }>();
 
 const rulesOpen = defineModel<boolean>("rulesOpen", { default: false });
@@ -59,6 +62,24 @@ function artifactPath(rel: string): string {
 }
 
 const reclaimTotal = computed(() => groupReclaimable(props.group));
+
+// ---- 差额（L1 / D18）----
+// 整组态与行态各看各的基线；0 与无基线都是 null，两处都不渲染。
+// 行态刻意用严格 Bytes（itemDeltaOf 内部）：超时行的 size 是 Text("—")，
+// 拿 itemSize 的 0 兜底会显示成假负差额。
+const groupDelta = computed(() =>
+  groupDeltaOf(groupSize(props.group), props.prev, props.group.id),
+);
+const rowDelta = computed(() =>
+  props.selectedRow ? itemDeltaOf(props.selectedRow, props.prev, props.group.id) : null,
+);
+/** 整组差额的提示：写「与多久前的扫描对比」，基线时刻缺失时退回通用口径。 */
+const deltaBaselineHint = computed(() => {
+  const at = props.prev?.group_saved_at?.[props.group.id];
+  return at
+    ? t("inspector.deltaBaselineHint", { ago: formatAgo(at) })
+    : t("assets.deltaHint");
+});
 
 /** 明细值统一渲染成文案；路径类的值（Raw 形态且是宿主机路径）另走等宽字体。 */
 function detailText(t: Text): string {
@@ -137,7 +158,20 @@ function detailIsPath(t: Text): boolean {
                 f.key === 'branch' ? 'font-mono text-[11px]' : '',
               ]"
             >
-              <ByteValue v-if="f.key === 'size' && itemSize(selectedRow) > 0" :bytes="itemSize(selectedRow)" />
+              <template v-if="f.key === 'size' && itemSize(selectedRow) > 0">
+                <ByteValue :bytes="itemSize(selectedRow)" />
+                <!-- 行态差额（L1 / D18）：体积值后缀同款 11px 小字。只挂在
+                     ByteValue 分支里——rowDelta 判严格 Bytes，但 Bytes(0) 的行
+                     主值是 cell 渲染的「0 B」，差额不往那支上挂。 -->
+                <span
+                  v-if="rowDelta !== null"
+                  class="ml-1.5 inline-flex items-center gap-0.5 whitespace-nowrap text-[11px] text-muted-foreground"
+                >
+                  <ArrowUpRight v-if="rowDelta > 0" class="size-3 shrink-0" aria-hidden="true" />
+                  <ArrowDownRight v-else class="size-3 shrink-0" aria-hidden="true" />
+                  {{ formatSignedBytes(rowDelta) }}
+                </span>
+              </template>
               <template v-else>{{ cell(selectedRow, f.key, f.temporal) }}</template>
             </dd>
           </div>
@@ -221,6 +255,15 @@ function detailIsPath(t: Text): boolean {
       <p v-if="group.summary" class="mt-2 text-pretty text-xs leading-relaxed text-foreground [overflow-wrap:anywhere]">
         {{ renderText(group.summary) }}
       </p>
+      <!-- 整组差额（L1 / D18）：摘要下一行小字，形态与 masthead 同款。
+           无基线 / 差额为 0 时不渲染。 -->
+      <Hint v-if="groupDelta !== null" :text="deltaBaselineHint">
+        <p class="mt-2 flex items-center gap-1 text-[11px] leading-none tabular-nums text-muted-foreground">
+          <ArrowUpRight v-if="groupDelta > 0" class="size-3 shrink-0" aria-hidden="true" />
+          <ArrowDownRight v-else class="size-3 shrink-0" aria-hidden="true" />
+          {{ t("assets.deltaVsPrev", { delta: formatSignedBytes(groupDelta) }) }}
+        </p>
+      </Hint>
       <div v-if="group.notes?.length" class="mt-4 space-y-3 border-t border-border/60 pt-3">
         <p
           v-for="(n, i) in group.notes"

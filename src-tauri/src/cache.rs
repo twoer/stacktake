@@ -26,7 +26,7 @@
 //! 缓存带 `schema` 版本号。`AssetGroup` 字段一变就 `+1`，
 //! 老缓存读出来直接丢弃，不需要手工清理。
 
-use crate::scan::AssetGroup;
+use crate::scan::{AssetGroup, MetricValue};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -93,7 +93,13 @@ use std::path::{Path, PathBuf};
 ///   `serde(default)`，老缓存读得出来但 detail 是空数组——静默缺失正是第十种
 ///   立下的「仍要跳版本」的理由。`CleanFailure` 不进缓存，但同批改了 `Text`，
 ///   记在这条里免得下次沿革断档。
-pub const SCHEMA_VERSION: u32 = 21;
+///
+/// **第十二种：上一版基线进信封**（L1，21 → 22）。新增 `prev`（[`PrevLedger`]），
+/// 带 `serde(default)`——空 = 无基线是合法态（首次运行 / 清缓存后），老缓存读得出来
+/// 但基线是空的，差额一栏会静默消失。与第十种给 `extra_repo_roots` 留的备注同理：
+/// 带 default 的静默缺失正是要跳版本防的陷阱，不跳的话老用户在界面上看不出
+/// 「没有差额」是「没有基线」还是「功能坏了」，还以为下次扫描就会补上。
+pub const SCHEMA_VERSION: u32 = 22;
 
 const CACHE_FILE: &str = "scan-cache.json";
 
@@ -110,6 +116,135 @@ pub struct CacheEnvelope {
     pub group_saved_at: BTreeMap<String, i64>,
     pub groups: Vec<AssetGroup>,
     pub extra_repo_roots: Vec<PathBuf>,
+    /// 上一版基线（差额台账）。空 = 无基线，整个字段省略——首扫与清缓存后
+    /// 的合法态，前端对缺失与空同义看待。带 `default` 仍要跳 `SCHEMA_VERSION`
+    /// 的理由见常量注释第十二种。
+    #[serde(default, skip_serializing_if = "PrevLedger::is_empty")]
+    pub prev: PrevLedger,
+}
+
+/// 上一版基线（L1 / D18 拍板 A：只留上一版，不做 N 版历史）。
+///
+/// 差额台账回答的只有一个问题——「较上次谁涨了多少」。「上次」在单组重扫
+/// 语境下天然是逐组的，与 `group_saved_at` 同构：每次写入把「当前」轮转成
+/// 「上一版」（[`rotate`]），基线逐组更新，各组的对比基准互不牵连。
+///
+/// **只记 `metrics["size"]` 为 `Bytes` 的条目**：repos 遍历超时写 `Text("—")`、
+/// wsl / local_models 体积未知时不写 size——这些行没有可比的体积，记进去
+/// 只能靠前端拿 0 兜底，会把超时行显示成假负差额。这里与前端（严格 Bytes
+/// 口径）一致地跳过它们。
+///
+/// 空 = 无基线（首次运行 / 清缓存后），是合法态；三个映射全空时序列化整个省略。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PrevLedger {
+    /// 基线时刻各分组的扫描时间。检查器整组差额的提示按它渲染「与 X 前的扫描对比」。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub group_saved_at: BTreeMap<String, i64>,
+    /// 组 → 条目 id → 体积。**按组成组存放**而不是一张扁平大表：单组轮转
+    /// （Refresh / Drop）要能明确圈出「哪些条目属于这个组」——repos 的条目 id
+    /// 是裸路径，从 id 本身判断不了归属。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub item_sizes: BTreeMap<String, BTreeMap<String, u64>>,
+    /// 组 → 合计体积（[`AssetGroup::total_size`] 口径：只数 Bytes，缺失按 0）。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub group_totals: BTreeMap<String, u64>,
+}
+
+impl PrevLedger {
+    pub fn is_empty(&self) -> bool {
+        self.group_saved_at.is_empty() && self.item_sizes.is_empty() && self.group_totals.is_empty()
+    }
+
+    /// 只挑出有可比体积（`size` 为 `Bytes`）的条目。非 Bytes 的 size（超时的
+    /// `Text("—")`）与缺失的 size 都不算——理由见结构体注释。
+    fn item_sizes_of(g: &AssetGroup) -> BTreeMap<String, u64> {
+        g.items
+            .iter()
+            .filter_map(|it| match it.metrics.get("size") {
+                Some(MetricValue::Bytes(b)) => Some((it.id.clone(), *b)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 把一份旧快照整体转成基线。`times` 里指向不存在分组的残留不收
+    /// （基线的键集与分组对齐，死组不留在映射里）。
+    fn from_snapshot(groups: &[AssetGroup], times: &BTreeMap<String, i64>) -> Self {
+        let mut ledger = PrevLedger::default();
+        for g in groups {
+            if let Some(t) = times.get(&g.id) {
+                ledger.group_saved_at.insert(g.id.clone(), *t);
+            }
+            ledger
+                .item_sizes
+                .insert(g.id.clone(), Self::item_sizes_of(g));
+            ledger.group_totals.insert(g.id.clone(), g.total_size());
+        }
+        ledger
+    }
+
+    /// 从基线里摘掉一个分组的全部条目。
+    fn remove_group(&mut self, id: &str) {
+        self.group_saved_at.remove(id);
+        self.item_sizes.remove(id);
+        self.group_totals.remove(id);
+    }
+}
+
+/// 轮转依据：这次写入把哪个范围的「当前」变成「上一版」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RotateBasis {
+    /// 全量重扫：基线整体换成旧当前值。旧基线丢弃——比较对象始终是
+    /// 「上一次扫描」，不是「上上次」。
+    Full,
+    /// 单组重扫：该组基线换成旧当前值，其余组沿用旧基线（它们的「上次」没变）。
+    Refresh(String),
+    /// 摘组（环境消失，`remove_group_from_cache`）：该组基线全部删除，
+    /// 死 id 不永久留在映射里。
+    Drop(String),
+}
+
+/// 轮转：由「旧基线 + 旧当前快照 + 旧逐组时间」算出下一次写入该带的基线。
+///
+/// **纯函数**：不碰磁盘、不读缓存，喂样本即可测。调用方在覆盖缓存**之前**调它
+/// ——旧当前值一旦被新快照覆盖就再也拿不回来了。
+///
+/// `Refresh` 对「旧当前里没有这个组，或它已经空了」按 [`RotateBasis::Drop`] 处理：
+/// 空组换上来的基线会让界面把整组当前值显示成「较上次 +全组」。补充目录变更后
+/// `load` 会把 repos 清空，那种情况走单组重扫正落在这里——跨范围的对比从根上
+/// 就不该出现，不留基线比留一个假基线诚实。
+pub fn rotate(
+    prev_old: &PrevLedger,
+    groups_old: &[AssetGroup],
+    times_old: &BTreeMap<String, i64>,
+    basis: &RotateBasis,
+) -> PrevLedger {
+    match basis {
+        RotateBasis::Full => PrevLedger::from_snapshot(groups_old, times_old),
+        RotateBasis::Drop(id) => {
+            let mut next = prev_old.clone();
+            next.remove_group(id);
+            next
+        }
+        RotateBasis::Refresh(id) => {
+            let mut next = prev_old.clone();
+            match groups_old.iter().find(|g| g.id == *id) {
+                Some(g) if !g.items.is_empty() => {
+                    next.item_sizes
+                        .insert(id.clone(), PrevLedger::item_sizes_of(g));
+                    next.group_totals.insert(id.clone(), g.total_size());
+                    if let Some(t) = times_old.get(id) {
+                        next.group_saved_at.insert(id.clone(), *t);
+                    }
+                    next
+                }
+                _ => {
+                    next.remove_group(id);
+                    next
+                }
+            }
+        }
+    }
 }
 
 /// 前端拿到的完整响应。
@@ -122,6 +257,9 @@ pub struct CachedSnapshot {
     /// 距今多久（秒），前端渲染成「3 小时前更新」
     pub age_seconds: i64,
     pub extra_repo_roots: Vec<PathBuf>,
+    /// 上一版基线（差额台账）。空时不序列化，前端按「无基线」处理。
+    #[serde(skip_serializing_if = "PrevLedger::is_empty")]
+    pub prev: PrevLedger,
 }
 
 pub fn cache_path(app_data_dir: &Path) -> PathBuf {
@@ -175,6 +313,7 @@ pub fn load(app_data_dir: &Path) -> Option<CachedSnapshot> {
         // 时钟回拨会让 age 变负，钳到 0
         age_seconds: age.max(0),
         extra_repo_roots: env.extra_repo_roots,
+        prev: env.prev,
     })
 }
 
@@ -184,17 +323,27 @@ pub fn load(app_data_dir: &Path) -> Option<CachedSnapshot> {
 /// 「数据更新于 X」的基准：前端自己用 `Date.now()` 近似会带上一次扫描的时长偏差
 /// （一次全量扫描几十秒到几分钟），而且缓存写失败时两边就对不上了。
 pub fn save(app_data_dir: &Path, groups: &[AssetGroup]) -> std::io::Result<i64> {
-    save_with_times(app_data_dir, groups, &BTreeMap::new(), &[])
+    save_with_times(
+        app_data_dir,
+        groups,
+        &BTreeMap::new(),
+        &[],
+        &PrevLedger::default(),
+    )
 }
 
 /// 同 [`save`]，但各分组的写入时间由调用方给。单组重扫用：只有被重扫的组记
 /// 新时间，其余组沿用它们上一次的值。映射里缺的组按**本次**写入时间记——
 /// 调用方（`lib.rs::run_group_scan`）负责把旧映射传进来，这里不读旧缓存。
+///
+/// `prev` 是写进信封的基线，由调用方用 [`rotate`] 在覆盖旧缓存**之前**算好：
+/// 旧当前值一旦被新快照覆盖就再也拿不回来了。首扫（没有旧快照）传 default。
 pub fn save_with_times(
     app_data_dir: &Path,
     groups: &[AssetGroup],
     group_saved_at: &BTreeMap<String, i64>,
     extra_repo_roots: &[PathBuf],
+    prev: &PrevLedger,
 ) -> std::io::Result<i64> {
     std::fs::create_dir_all(app_data_dir)?;
 
@@ -212,6 +361,7 @@ pub fn save_with_times(
         group_saved_at: times,
         groups: groups.to_vec(),
         extra_repo_roots: extra_repo_roots.to_vec(),
+        prev: prev.clone(),
     };
     let json = serde_json::to_string(&env)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;

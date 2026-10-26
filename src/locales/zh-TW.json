@@ -93,6 +93,8 @@
   "assets.autoScanFailed": "自動重新掃描失敗：{message}",
   "assets.busy": "正在掃描或更新目錄，請稍後再試",
   "assets.scanProgress": "掃描進度",
+  "assets.deltaVsPrev": "較上次 {delta}",
+  "assets.deltaHint": "逐組與該組上一次掃描比較；單組重新掃描只更新該組基準",
 
   "inspector.clean": "清理",
   "inspector.cleanArtifacts": "清理產物",
@@ -109,6 +111,7 @@
   "inspector.rule3": "編輯器與 AI 工具依「工具 × 類別」清日誌 / 工作階段 / 快取；工作階段含完整對話記錄，刪除後不會自動重建。",
   "inspector.readOnly": "本組唯讀：帳面可回收不等於有刪除入口。",
   "inspector.reclaimable": "可回收",
+  "inspector.deltaBaselineHint": "與 {ago} 前的掃描比較",
 
   "clean.title": "移入垃圾桶",
   "clean.repoBody": "將把整個儲存庫目錄（連同原始碼與 .git 歷史）移入垃圾桶，之後可以從垃圾桶還原。",

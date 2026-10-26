@@ -96,6 +96,8 @@
   "assets.autoScanFailed": "Automatic rescan failed: {message}",
   "assets.busy": "Scanning or updating folders — try again in a moment",
   "assets.scanProgress": "Scan progress",
+  "assets.deltaVsPrev": "vs last scan {delta}",
+  "assets.deltaHint": "Each group compares against its own previous scan; rescanning a single group only updates that group's baseline.",
 
   "inspector.clean": "Clean",
   "inspector.cleanArtifacts": "Clean artifacts",
@@ -113,6 +115,7 @@
   "inspector.rule3": "Editor and AI tools are cleaned by “tool × category” (logs / sessions / caches); sessions contain the full conversation history and are not regenerated after deletion.",
   "inspector.readOnly": "This group is read-only: a reclaimable figure doesn't mean there is a delete action.",
   "inspector.reclaimable": "Reclaimable",
+  "inspector.deltaBaselineHint": "Compared with the scan {ago}",
 
   "clean.title": "Move to Trash",
   "clean.repoBody": "The entire repository folder (including source code and .git history) will be moved to the Trash. You can restore it from the Trash later.",

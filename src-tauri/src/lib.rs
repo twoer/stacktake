@@ -137,6 +137,9 @@ struct BootPayload {
     saved_at: i64,
     /// 各分组各自的写入时间（语义见 [`ScanResult::group_saved_at`]）。
     group_saved_at: BTreeMap<String, i64>,
+    /// 上一版基线（差额台账）。空时不序列化，前端按「无基线」处理。
+    #[serde(skip_serializing_if = "cache::PrevLedger::is_empty")]
+    prev: cache::PrevLedger,
     /// 本次是否真的扫描了。`false` = 吃的缓存。
     scanned: bool,
 }
@@ -151,11 +154,17 @@ struct BootPayload {
 /// `group_saved_at` 是各分组各自的写入时间：单组重扫之后不同分组的新鲜度不同，
 /// 「数据更新于」要按当前视图取对应组的时间，不能拿信封级 `saved_at` 冒充
 /// 全体数据的新鲜度。全量扫描时全部等于 `saved_at`。
+///
+/// `prev` 是上一版基线（差额台账）：清理 → 自动单组重扫后基线 = 清理前，
+/// 差额天然显示「−释放量」，与行闪动互为长短反馈。基线随快照一起下发，
+/// 前端不需要第二次 IPC。
 #[derive(Clone, serde::Serialize)]
 struct ScanResult {
     groups: Vec<AssetGroup>,
     saved_at: i64,
     group_saved_at: BTreeMap<String, i64>,
+    #[serde(skip_serializing_if = "cache::PrevLedger::is_empty")]
+    prev: cache::PrevLedger,
 }
 
 /// 扫描进度事件名。前端 `useAssets.ts` 里监听同一个名字（两边没有共享常量机制，
@@ -232,9 +241,25 @@ async fn run_full_scan(app: &AppHandle) -> Result<ScanResult, String> {
     //
     // 缓存里存的是各扫描器的原始快照（**不含总览**，总览每次现算），
     // 返回给前端前再过一遍 `with_overview`。
+    //
+    // 基线轮转的旧值也从 cache::load 取（D18）：必须在 save 之前读——旧当前值
+    // 一旦被覆盖就再也拿不回来了。load 在补充目录变更时已把 repos 清空，
+    // 基线自然不含旧范围的 repos，跨范围不对比，不另写判断。
     let mut saved_at = cache::now_secs();
+    let old = data_dir(app)
+        .ok()
+        .and_then(|dir| cache::load(&dir))
+        .map(|snap| (snap.groups, snap.group_saved_at, snap.prev));
+    let (old_groups, old_times, old_prev) =
+        old.unwrap_or_else(|| (Vec::new(), BTreeMap::new(), cache::PrevLedger::default()));
+    let prev = cache::rotate(
+        &old_prev,
+        &old_groups,
+        &old_times,
+        &cache::RotateBasis::Full,
+    );
     if let Some(dir) = data_dir(app).ok()
-        && let Ok(ts) = cache::save_with_times(&dir, &groups, &BTreeMap::new(), &roots.extra)
+        && let Ok(ts) = cache::save_with_times(&dir, &groups, &BTreeMap::new(), &roots.extra, &prev)
     {
         saved_at = ts;
     }
@@ -245,6 +270,7 @@ async fn run_full_scan(app: &AppHandle) -> Result<ScanResult, String> {
         groups: with_overview(groups),
         saved_at,
         group_saved_at,
+        prev,
     })
 }
 
@@ -278,6 +304,13 @@ async fn remove_group_from_cache(app: &AppHandle, group_id: &str) -> Result<Scan
     let Some(snap) = cache::load(&dir) else {
         return run_full_scan(app).await;
     };
+    // 基线轮转在消费 snap 之前做——groups / prev 都要从旧快照里拿
+    let prev = cache::rotate(
+        &snap.prev,
+        &snap.groups,
+        &snap.group_saved_at,
+        &cache::RotateBasis::Drop(group_id.to_string()),
+    );
     let groups: Vec<AssetGroup> = snap
         .groups
         .into_iter()
@@ -291,12 +324,19 @@ async fn remove_group_from_cache(app: &AppHandle, group_id: &str) -> Result<Scan
     if groups.is_empty() {
         return run_full_scan(app).await;
     }
-    let saved_at = cache::save_with_times(&dir, &groups, &group_saved_at, &snap.extra_repo_roots)
-        .unwrap_or_else(|_| cache::now_secs());
+    let saved_at = cache::save_with_times(
+        &dir,
+        &groups,
+        &group_saved_at,
+        &snap.extra_repo_roots,
+        &prev,
+    )
+    .unwrap_or_else(|_| cache::now_secs());
     Ok(ScanResult {
         groups: with_overview(groups),
         saved_at,
         group_saved_at,
+        prev,
     })
 }
 
@@ -368,6 +408,15 @@ async fn run_group_scan(app: &AppHandle, group_id: &str) -> Result<ScanResult, S
 
     // 并入缓存：被重扫的组记本次时间，其余组保留各自的旧时间——「数据更新于」
     // 逐组取值才不会拿最新时间冒充全体新鲜度。
+    //
+    // 基线轮转同样在消费 snap 之前：Refresh(本组) = 本组基线换成旧当前值，
+    // 其余组沿用旧基线（它们的「上次」没有变）。
+    let prev = cache::rotate(
+        &snap.prev,
+        &snap.groups,
+        &snap.group_saved_at,
+        &cache::RotateBasis::Refresh(group_id.to_string()),
+    );
     let mut times = snap.group_saved_at;
     times.insert(fresh.id.clone(), cache::now_secs());
     let groups = scan::upsert_group(snap.groups, fresh);
@@ -376,13 +425,14 @@ async fn run_group_scan(app: &AppHandle, group_id: &str) -> Result<ScanResult, S
     } else {
         snap.extra_repo_roots
     };
-    let saved_at = cache::save_with_times(&dir, &groups, &times, &extra)
+    let saved_at = cache::save_with_times(&dir, &groups, &times, &extra, &prev)
         .map_err(|e| format!("无法保存扫描结果：{e}"))?;
 
     Ok(ScanResult {
         groups: with_overview(groups),
         saved_at,
         group_saved_at: times,
+        prev,
     })
 }
 
@@ -417,6 +467,7 @@ async fn bootstrap(
             groups: with_overview(snap.groups),
             saved_at: snap.saved_at,
             group_saved_at: snap.group_saved_at,
+            prev: snap.prev,
             scanned: false,
         });
     }
@@ -427,6 +478,7 @@ async fn bootstrap(
         groups: r.groups,
         saved_at: r.saved_at,
         group_saved_at: r.group_saved_at,
+        prev: r.prev,
         scanned: true,
     })
 }
@@ -472,6 +524,7 @@ fn repo_roots_scan_error(app: &AppHandle, message: String) -> RepoRootsError {
             groups: with_overview(snap.groups),
             saved_at: snap.saved_at,
             group_saved_at: snap.group_saved_at,
+            prev: snap.prev,
         });
     RepoRootsError { message, snapshot }
 }

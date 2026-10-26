@@ -4,7 +4,9 @@ import { useRouter } from "vue-router";
 import {
   AlertTriangle,
   ArrowDown,
+  ArrowDownRight,
   ArrowUp,
+  ArrowUpRight,
   Check,
   FolderPlus,
   ListChecks,
@@ -25,6 +27,7 @@ import {
 import { useAssets } from "@/composables/useAssets";
 import { useRepoRoots } from "@/composables/useRepoRoots";
 import { captureRowTops, playRowFlip } from "@/lib/motion";
+import { deltaOf, formatSignedBytes, sumOf } from "@/lib/delta";
 import {
   batchCleanRows,
   batchReclaimOf,
@@ -78,6 +81,7 @@ const {
   scanDoneLabels,
   cachedAt,
   groupSavedAt,
+  prev,
   now,
   rescan,
   rescanGroup,
@@ -829,6 +833,16 @@ const reclaimEstimateHint = computed(() => t("assets.reclaimEstimate"));
 /** 总览首块「本机合计」：总占用 / 可回收 / 分组数 / 条目总数 / 近 7 天有提交。口径在 lib/rows。 */
 const machineStats = computed(() => machineStatsOf(groups.value, now.value));
 
+/**
+ * 总览 masthead 的整机差额（L1 / D18）：当前合计对基线合计。基线没有的组
+ * （新装的环境、换过范围后重扫的 repos）按 0 计入基线侧——「较上次」在整机
+ * 粒度上如实反映总量变化；逐组与逐行的差额在检查器里各看各的基线。
+ */
+const machineDelta = computed(() => {
+  const baseline = sumOf(Object.values(prev.value?.group_totals ?? {}));
+  return baseline === null ? null : deltaOf(machineStats.value.total, baseline);
+});
+
 /** 模板签名保持 (item)；占比带与「分母是全组合计」的口径在 lib/rows。 */
 function shareLabel(it: Item): string {
   return shareLabelOf(it, machineStats.value.total);
@@ -1024,6 +1038,16 @@ async function onRescan() {
                 <p class="hero-figure mt-2 text-[42px] font-semibold leading-none tracking-tight">
                   <ByteValue :bytes="machineStats.total" animate />
                 </p>
+                <!-- 差额（L1 / D18）：masthead 的唯一增量行。11px 墨色、方向箭头
+                     12px、不引入警示色——涨跌都靠箭头与符号说，配色 token 不动。
+                     无基线 / 差额为 0 时不渲染，界面与没有这行时完全一致。 -->
+                <Hint v-if="machineDelta !== null" :text="t('assets.deltaHint')">
+                  <p class="mt-2 flex items-center gap-1 text-[11px] leading-none tabular-nums text-muted-foreground">
+                    <ArrowUpRight v-if="machineDelta > 0" class="size-3 shrink-0" aria-hidden="true" />
+                    <ArrowDownRight v-else class="size-3 shrink-0" aria-hidden="true" />
+                    {{ t("assets.deltaVsPrev", { delta: formatSignedBytes(machineDelta) }) }}
+                  </p>
+                </Hint>
               </div>
               <div class="flex flex-wrap items-end gap-x-10 gap-y-3">
                 <Hint :text="reclaimEstimateHint">
@@ -1325,6 +1349,7 @@ async function onRescan() {
           :group="current"
           :selected-row="selectedRow"
           :split-reclaim="splitReclaim"
+          :prev="prev"
           @reveal="onReveal"
           @reveal-at="revealAt"
           @ask-clean="askClean"

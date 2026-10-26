@@ -1025,6 +1025,7 @@ Host gamma
             &original.groups,
             &original.group_saved_at,
             &crate::roots::load_extra(&dir).unwrap(),
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(cache::load(&dir).unwrap().groups[0].items.len(), 1);
@@ -1041,8 +1042,14 @@ Host gamma
         let root = dir.join("code");
         std::fs::create_dir(&root).unwrap();
         crate::roots::add(&dir, &root).unwrap();
-        cache::save_with_times(&dir, &[sample_group()], &Default::default(), &scanned.extra)
-            .unwrap();
+        cache::save_with_times(
+            &dir,
+            &[sample_group()],
+            &Default::default(),
+            &scanned.extra,
+            &Default::default(),
+        )
+        .unwrap();
         let raw = std::fs::read(cache::cache_path(&dir)).unwrap();
         let saved: cache::CacheEnvelope = serde_json::from_slice(&raw).unwrap();
         assert!(saved.extra_repo_roots.is_empty());
@@ -1158,7 +1165,14 @@ Host gamma
         let b = overview_fixture("toolchain", "工具链缓存", 2, 0);
 
         let times = std::collections::BTreeMap::from([("repos".to_string(), 1_000_000)]);
-        cache::save_with_times(&dir, &[a.clone(), b.clone()], &times, &[]).unwrap();
+        cache::save_with_times(
+            &dir,
+            &[a.clone(), b.clone()],
+            &times,
+            &[],
+            &Default::default(),
+        )
+        .unwrap();
         let got = cache::load(&dir).expect("读缓存失败");
         assert_eq!(
             got.group_saved_at.get("repos"),
@@ -1182,6 +1196,240 @@ Host gamma
             all.iter().all(|t| *t == all[0]),
             "全量 save 后各组时间应一致：{all:?}"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- 上一版基线（L1 / D18）----
+
+    /// rotate(Full)：基线整体换成旧当前值——逐条、逐组合计、逐组时间都来自
+    /// 旧快照；旧基线里的死组随之一并丢弃（比较对象始终是「上一次扫描」）。
+    #[test]
+    fn rotate_full_takes_old_current_as_baseline() {
+        let repos = overview_fixture("repos", "Git 仓库", 3_000, 1_000);
+        let toolchain = overview_fixture("toolchain", "工具链缓存", 2_000, 0);
+        let times = std::collections::BTreeMap::from([
+            ("repos".to_string(), 1_000),
+            ("toolchain".to_string(), 2_000),
+        ]);
+        let prev_old = cache::PrevLedger {
+            group_saved_at: std::collections::BTreeMap::from([("wsl".to_string(), 9_000)]),
+            item_sizes: std::collections::BTreeMap::from([(
+                "wsl".to_string(),
+                std::collections::BTreeMap::from([("wsl:deb".to_string(), 5_000)]),
+            )]),
+            group_totals: std::collections::BTreeMap::from([("wsl".to_string(), 5_000)]),
+        };
+
+        let next = cache::rotate(
+            &prev_old,
+            &[repos, toolchain],
+            &times,
+            &cache::RotateBasis::Full,
+        );
+
+        assert!(!next.is_empty());
+        assert_eq!(next.group_totals.get("repos"), Some(&3_000));
+        assert_eq!(next.group_totals.get("toolchain"), Some(&2_000));
+        assert_eq!(next.group_saved_at.get("repos"), Some(&1_000));
+        assert_eq!(
+            next.item_sizes.get("repos").and_then(|m| m.get("repos:a")),
+            Some(&3_000)
+        );
+        assert!(
+            !next.group_totals.contains_key("wsl") && !next.item_sizes.contains_key("wsl"),
+            "旧基线里的死组不得残留：{next:?}"
+        );
+    }
+
+    /// rotate(Refresh)：只有被重扫的组基线换成旧当前值，其余组沿用旧基线——
+    /// 单组重扫不该动别的组的「上次」，否则清完 toolchain 会把 repos 的差额
+    /// 也一起抹掉。
+    #[test]
+    fn rotate_refresh_swaps_one_group_and_keeps_others() {
+        let repos = overview_fixture("repos", "Git 仓库", 4_000, 0);
+        let toolchain = overview_fixture("toolchain", "工具链缓存", 2_000, 0);
+        let times = std::collections::BTreeMap::from([
+            ("repos".to_string(), 1_000),
+            ("toolchain".to_string(), 2_000),
+        ]);
+        let prev_old = cache::PrevLedger {
+            group_saved_at: std::collections::BTreeMap::from([
+                ("repos".to_string(), 500),
+                ("toolchain".to_string(), 2_000),
+            ]),
+            item_sizes: std::collections::BTreeMap::from([
+                (
+                    "repos".to_string(),
+                    std::collections::BTreeMap::from([("repos:a".to_string(), 3_000)]),
+                ),
+                (
+                    "toolchain".to_string(),
+                    std::collections::BTreeMap::from([("toolchain:a".to_string(), 2_000)]),
+                ),
+            ]),
+            group_totals: std::collections::BTreeMap::from([
+                ("repos".to_string(), 3_000),
+                ("toolchain".to_string(), 2_000),
+            ]),
+        };
+
+        let next = cache::rotate(
+            &prev_old,
+            &[repos, toolchain],
+            &times,
+            &cache::RotateBasis::Refresh("repos".to_string()),
+        );
+
+        assert_eq!(
+            next.group_totals.get("repos"),
+            Some(&4_000),
+            "该组基线 = 旧当前值"
+        );
+        assert_eq!(next.group_saved_at.get("repos"), Some(&1_000));
+        assert_eq!(
+            next.item_sizes.get("repos").and_then(|m| m.get("repos:a")),
+            Some(&4_000)
+        );
+        assert_eq!(
+            next.group_totals.get("toolchain"),
+            Some(&2_000),
+            "其余组沿用旧基线"
+        );
+        assert_eq!(next.group_saved_at.get("toolchain"), Some(&2_000));
+    }
+
+    /// rotate(Refresh) 对「旧当前为空或缺席」按 Drop 处理：空基线会让界面把整组
+    /// 当前值显示成「较上次 +全组」。补充目录变更后 load 会清空 repos，那种
+    /// 单组重扫正落在这里——跨范围的对比从根上就不该出现。
+    #[test]
+    fn rotate_refresh_with_empty_or_absent_old_group_leaves_no_baseline() {
+        let mut json =
+            serde_json::to_value(overview_fixture("repos", "Git 仓库", 3_000, 0)).unwrap();
+        json["items"] = serde_json::json!([]);
+        let empty_repos: AssetGroup =
+            serde_json::from_str(&serde_json::to_string(&json).unwrap()).unwrap();
+        let prev_old = cache::PrevLedger {
+            group_saved_at: std::collections::BTreeMap::from([("repos".to_string(), 500)]),
+            item_sizes: std::collections::BTreeMap::from([(
+                "repos".to_string(),
+                std::collections::BTreeMap::from([("repos:a".to_string(), 3_000)]),
+            )]),
+            group_totals: std::collections::BTreeMap::from([("repos".to_string(), 3_000)]),
+        };
+
+        let empty = cache::rotate(
+            &prev_old,
+            std::slice::from_ref(&empty_repos),
+            &std::collections::BTreeMap::new(),
+            &cache::RotateBasis::Refresh("repos".to_string()),
+        );
+        assert!(empty.is_empty(), "旧当前为空的组不留基线：{empty:?}");
+
+        let absent = cache::rotate(
+            &prev_old,
+            &[],
+            &std::collections::BTreeMap::new(),
+            &cache::RotateBasis::Refresh("repos".to_string()),
+        );
+        assert!(
+            absent.is_empty(),
+            "旧当前里没有的组同样不留基线：{absent:?}"
+        );
+    }
+
+    /// rotate(Drop)：摘组时该组基线全部删除，死 id 不永久留在映射里；
+    /// 其余组原样保留。
+    #[test]
+    fn rotate_drop_removes_the_group_baseline() {
+        let repos = overview_fixture("repos", "Git 仓库", 3_000, 0);
+        let toolchain = overview_fixture("toolchain", "工具链缓存", 2_000, 0);
+        let prev_old = cache::rotate(
+            &cache::PrevLedger::default(),
+            &[repos, toolchain],
+            &std::collections::BTreeMap::new(),
+            &cache::RotateBasis::Full,
+        );
+
+        let next = cache::rotate(
+            &prev_old,
+            &[],
+            &std::collections::BTreeMap::new(),
+            &cache::RotateBasis::Drop("toolchain".to_string()),
+        );
+
+        assert!(!next.group_totals.contains_key("toolchain"));
+        assert!(!next.item_sizes.contains_key("toolchain"));
+        assert!(!next.group_saved_at.contains_key("toolchain"));
+        assert_eq!(
+            next.group_totals.get("repos"),
+            Some(&3_000),
+            "别的组不受牵连"
+        );
+    }
+
+    /// 只有 `size` 为 Bytes 的条目进基线：repos 遍历超时写 `Text("—")`、
+    /// wsl / local_models 体积未知时不写 size——这些行没有可比体积，记进去
+    /// 只能靠 0 兜底，会把超时行显示成假负差额。
+    #[test]
+    fn rotate_records_only_byte_sized_items() {
+        let mut json =
+            serde_json::to_value(overview_fixture("repos", "Git 仓库", 1_000, 0)).unwrap();
+        // 超时行：size 是 Text（前端 itemSize 对它返回 0，差额判定必须更严）
+        json["items"][0]["metrics"]["size"] = serde_json::json!({"t": "s", "v": "—"});
+        // 体积未知：干脆不写 size
+        json["items"][1]["metrics"]
+            .as_object_mut()
+            .unwrap()
+            .remove("size");
+        let group: AssetGroup =
+            serde_json::from_str(&serde_json::to_string(&json).unwrap()).unwrap();
+
+        let next = cache::rotate(
+            &cache::PrevLedger::default(),
+            &[group],
+            &std::collections::BTreeMap::new(),
+            &cache::RotateBasis::Full,
+        );
+
+        let sizes = next.item_sizes.get("repos").unwrap();
+        assert!(sizes.is_empty(), "非 Bytes 的 size 不进基线：{sizes:?}");
+        assert_eq!(
+            next.group_totals.get("repos"),
+            Some(&0),
+            "合计按 total_size 口径：非 Bytes 按 0"
+        );
+    }
+
+    /// 基线往返：save 带上的 prev 要原样读回来；空基线不写进信封（键都不出现），
+    /// 读回来是空——「无基线」与「基线为空」是同一个合法态。
+    #[test]
+    fn cache_round_trip_preserves_prev_ledger() {
+        let dir = temp_dir("prev-ledger");
+        let groups = vec![
+            overview_fixture("repos", "Git 仓库", 3_000, 0),
+            overview_fixture("toolchain", "工具链缓存", 2_000, 0),
+        ];
+        let times = std::collections::BTreeMap::from([
+            ("repos".to_string(), 1_000),
+            ("toolchain".to_string(), 2_000),
+        ]);
+        let prev = cache::rotate(
+            &cache::PrevLedger::default(),
+            &groups,
+            &times,
+            &cache::RotateBasis::Full,
+        );
+
+        cache::save_with_times(&dir, &groups, &times, &[], &prev).unwrap();
+        let got = cache::load(&dir).expect("读缓存失败");
+        assert_eq!(got.prev, prev, "基线要原样往返");
+
+        cache::save_with_times(&dir, &groups, &times, &[], &cache::PrevLedger::default()).unwrap();
+        let raw = std::fs::read_to_string(cache::cache_path(&dir)).unwrap();
+        assert!(!raw.contains("\"prev\""), "空基线不该写进信封");
+        let got = cache::load(&dir).unwrap();
+        assert!(got.prev.is_empty(), "读回来的空基线是合法态");
 
         std::fs::remove_dir_all(&dir).ok();
     }

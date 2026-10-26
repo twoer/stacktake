@@ -97,6 +97,8 @@
   "assets.autoScanFailed": "Error en el reanálisis automático: {message}",
   "assets.busy": "Analizando o actualizando carpetas; inténtalo de nuevo en un momento",
   "assets.scanProgress": "Progreso del análisis",
+  "assets.deltaVsPrev": "vs. el análisis anterior {delta}",
+  "assets.deltaHint": "Cada grupo se compara con su propio análisis anterior; reanalizar un solo grupo solo actualiza la base de ese grupo.",
 
   "inspector.clean": "Limpiar",
   "inspector.cleanArtifacts": "Limpiar artefactos",
@@ -114,6 +116,7 @@
   "inspector.rule3": "Las herramientas de edición e IA se limpian por «herramienta × categoría» (registros / sesiones / cachés); las sesiones contienen el historial completo de conversaciones y no se regeneran al borrarlas.",
   "inspector.readOnly": "Este grupo es de solo lectura: una cifra recuperable no implica que haya una acción de eliminación.",
   "inspector.reclaimable": "Recuperable",
+  "inspector.deltaBaselineHint": "Comparado con el análisis de {ago}",
 
   "clean.title": "Mover a la Papelera",
   "clean.repoBody": "Se moverá toda la carpeta del repositorio (incluido el código fuente y el historial de .git) a la Papelera. Podrás restaurarla desde allí.",

@@ -36,10 +36,17 @@ fn main() {
         eprintln!("  · {:<10} {} 个条目", g.id, g.items.len());
     }
 
-    // 缓存只存扫描器快照；总览是现算的（app 的 bootstrap / run_full_scan 同一约定）
+    // 缓存只存扫描器快照；总览是现算的（app 的 bootstrap / run_full_scan 同一约定）。
+    // dump 每次从零扫起、没有「上一版」可言，基线传 default（信封里不出现 prev）。
     roots::save_extra(&cache_dir, scan_roots.extra.clone()).expect("写目录配置失败");
-    cache::save_with_times(&cache_dir, &groups, &Default::default(), &scan_roots.extra)
-        .expect("写缓存失败");
+    cache::save_with_times(
+        &cache_dir,
+        &groups,
+        &Default::default(),
+        &scan_roots.extra,
+        &Default::default(),
+    )
+    .expect("写缓存失败");
     let cache_bytes = std::fs::metadata(cache::cache_path(&cache_dir))
         .map(|m| m.len())
         .unwrap_or(0);

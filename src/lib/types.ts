@@ -152,6 +152,22 @@ export function kindKeyOf(it: Item | null | undefined): string {
   return m && m.t === "s" ? String(m.v) : "";
 }
 
+/**
+ * Rust `cache::PrevLedger` 的对应结构——上一版基线（差额台账，L1 / D18）。
+ *
+ * Rust 侧三个映射**全空时整个字段省略**，单组轮转只动该组那一份，所以三个
+ * 字段在 `undefined` 语义上等同：没有这个键 = 没有基线 = 不显示差额。
+ * 判读口径在 `lib/delta.ts`，这里只做镜像。
+ */
+export interface PrevLedger {
+  /** 基线时刻各分组的扫描时间（检查器整组差额提示按它渲染「与 X 前的扫描对比」）。 */
+  group_saved_at?: Record<string, number>
+  /** 组 → 条目 id → 体积（只记 size 为严格 Bytes 的条目）。 */
+  item_sizes?: Record<string, Record<string, number>>
+  /** 组 → 合计体积（Rust `AssetGroup::total_size` 口径）。 */
+  group_totals?: Record<string, number>
+}
+
 /** Rust `cache::CachedSnapshot` 的对应结构。 */
 export interface CachedSnapshot {
   groups: AssetGroup[]
@@ -160,6 +176,8 @@ export interface CachedSnapshot {
   group_saved_at: Record<string, number>
   age_seconds: number
   extra_repo_roots: string[]
+  /** 上一版基线（差额台账）。缺省 = 无基线（首次运行 / 清缓存后的合法态）。 */
+  prev?: PrevLedger | null
 }
 
 /** Rust `lib.rs::BootPayload` 的对应结构——启动时的统一响应。 */
@@ -168,6 +186,8 @@ export interface BootPayload {
   saved_at: number
   /** 各分组各自的写入时间，语义见 ScanResult */
   group_saved_at: Record<string, number>
+  /** 上一版基线（差额台账）。缺省 = 无基线。 */
+  prev?: PrevLedger | null
   /** 本次是否真的扫描了。false = 吃的缓存 */
   scanned: boolean
 }
@@ -186,6 +206,8 @@ export interface ScanResult {
   groups: AssetGroup[]
   saved_at: number
   group_saved_at: Record<string, number>
+  /** 上一版基线（差额台账）。缺省 = 无基线。 */
+  prev?: PrevLedger | null
 }
 
 /** 补充扫描目录；离线目录仍保留在配置中，允许移除。 */

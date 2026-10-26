@@ -93,6 +93,8 @@
   "assets.autoScanFailed": "自動再スキャンに失敗しました: {message}",
   "assets.busy": "スキャンまたはフォルダ更新中です。しばらくしてからお試しください",
   "assets.scanProgress": "スキャンの進行状況",
+  "assets.deltaVsPrev": "前回比 {delta}",
+  "assets.deltaHint": "各グループはそれぞれの前回のスキャンと比較します。単一グループの再スキャンでは、そのグループの基準だけを更新します。",
 
   "inspector.clean": "クリーン",
   "inspector.cleanArtifacts": "成果物をクリーン",
@@ -109,6 +111,7 @@
   "inspector.rule3": "エディタと AI ツールは「ツール × カテゴリ」（ログ / セッション / キャッシュ）単位でクリーンします。セッションには会話履歴全体が含まれ、削除しても自動では再生成されません。",
   "inspector.readOnly": "このグループは読み取り専用です。回収可能な数値があっても削除操作があるとは限りません。",
   "inspector.reclaimable": "回収可能",
+  "inspector.deltaBaselineHint": "{ago}のスキャンとの比較",
 
   "clean.title": "ゴミ箱へ移動",
   "clean.repoBody": "リポジトリのフォルダ全体（ソースコードと .git の履歴を含む）をゴミ箱へ移動します。あとからゴミ箱で復元できます。",

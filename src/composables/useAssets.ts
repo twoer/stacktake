@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { toast } from "vue-sonner";
 import { autoScanDue } from "@/lib/autoScan";
 import { t } from "@/lib/i18n";
-import type { AssetGroup, BootPayload, ScanProgress, ScanResult, Text } from "@/lib/types";
+import type { AssetGroup, BootPayload, PrevLedger, ScanProgress, ScanResult, Text } from "@/lib/types";
 import { useAutoScan } from "@/composables/useAutoScan";
 
 /**
@@ -25,6 +25,12 @@ const cachedAt = ref<number | null>(null);
  * 值与 cachedAt 相同。
  */
 const groupSavedAt = ref<Record<string, number>>({});
+/**
+ * 上一版基线（差额台账，L1 / D18）。随快照一起下发：boot 缓存 / 自动重扫 /
+ * 全量 / 单组四条路径都经 applySnapshot 统一写入。缺省（null / undefined）=
+ * 无基线，三处差额位（masthead / 检查器整组 / 行）都不渲染。
+ */
+const prev = ref<PrevLedger | null>(null);
 /**
  * 扫描进度。Rust 侧每完成一个分组 emit 一次（事件名 "scan-progress"，
  * 与 lib.rs::SCAN_PROGRESS_EVENT 一致），顶栏据此画真实进度条。
@@ -78,6 +84,7 @@ function applySnapshot(next: ScanResult) {
   groups.value = next.groups;
   cachedAt.value = next.saved_at;
   groupSavedAt.value = next.group_saved_at;
+  prev.value = next.prev ?? null;
 }
 
 export function useAssets() {
@@ -191,6 +198,7 @@ export function useAssets() {
     error,
     cachedAt,
     groupSavedAt,
+    prev,
     progress,
     scanDoneLabels,
     now,
