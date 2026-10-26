@@ -504,7 +504,9 @@ fn get_repo_roots(app: AppHandle) -> Result<roots::RepoRoots, String> {
 #[derive(serde::Serialize)]
 struct RepoRootsError {
     message: String,
-    snapshot: Option<ScanResult>,
+    // Box 是给 clippy 的 `result_large_err` 的：`ScanResult` 带 `prev` 后体积过
+    // 128 字节阈（CI 1.99 实测 ≥152），Err 变体过大。序列化形状不变（值/null）。
+    snapshot: Option<Box<ScanResult>>,
 }
 
 impl From<String> for RepoRootsError {
@@ -526,7 +528,10 @@ fn repo_roots_scan_error(app: &AppHandle, message: String) -> RepoRootsError {
             group_saved_at: snap.group_saved_at,
             prev: snap.prev,
         });
-    RepoRootsError { message, snapshot }
+    RepoRootsError {
+        message,
+        snapshot: snapshot.map(Box::new),
+    }
 }
 
 #[tauri::command]

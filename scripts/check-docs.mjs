@@ -34,10 +34,9 @@ const BUDGETS = [
   // 不做药丸 / 侧栏无图标 / 不自我解释，删过别加回来）与 H14 隐藏分组的恢复步骤；
   // 已先把本段其它表述压到最短，仍差 40 字符，才动数字。
   { file: "AGENTS.md", max: 17_800 },
-  // 9_800：2026-10-26 Track M 登记——Track 头写明拍板方法（装机量雷达、季度节奏）
-  // 与七条目的核实状态，避免这些只活在会话里；M1 收口说明后续也落这里。
-  // 细节都在 docs/evidence/，backlog 只留结论。
-  { file: "docs/backlog.md", max: 9_800 },
+  // 10_800：2026-10-26 Track M / N 两 Track 同日登记（M1 + N1 的条目、两段收口
+  // 说明与工具链落差遗留），M1 收口说明与事故记录也留在这里。
+  { file: "docs/backlog.md", max: 10_800 },
   { file: "docs/backlog-archive.md", max: 8_000 },
 ];
 
@@ -244,7 +243,7 @@ function selfTest() {
   const cases = [
     ["基线通过", () => {}, null],
     ["AGENTS 预算", (root) => write(root, "AGENTS.md", "x".repeat(17_801)), "超过预算"],
-    ["backlog 预算", (root) => write(root, "docs/backlog.md", "x".repeat(9_801)), "超过预算"],
+    ["backlog 预算", (root) => write(root, "docs/backlog.md", "x".repeat(10_801)), "超过预算"],
     ["索引预算", (root) => write(root, "docs/backlog-archive.md", "x".repeat(8_001)), "超过预算"],
     [
       "缺少刀的索引行",
