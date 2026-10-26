@@ -27,6 +27,7 @@
 use crate::scan::repos::dir_size_fast;
 use crate::scan::{
     AssetGroup, DetailRow, Field, Item, MetricValue, Scanner, Tag, Text, TextArg, field_text,
+    without_console,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -107,7 +108,7 @@ fn find_docker() -> Option<PathBuf> {
 /// 跑一次 docker 子进程。失败时把 stderr 首行带回去——
 /// 「Cannot connect to the Docker daemon」这类信息直接给用户看比自己翻译准确。
 fn run(bin: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new(bin)
+    let out = without_console(Command::new(bin))
         .args(args)
         .stdin(Stdio::null())
         .output()

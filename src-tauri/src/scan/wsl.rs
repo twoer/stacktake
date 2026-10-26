@@ -48,6 +48,7 @@ use crate::scan::platform::Platform;
 use crate::scan::repos::{dir_sizes_batch, mtime_secs};
 use crate::scan::{
     AssetGroup, DetailRow, Field, Item, MetricValue, Scanner, Text, TextArg, field_text, kind_text,
+    without_console,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -201,7 +202,7 @@ fn reg_exe() -> PathBuf {
 
 /// 调一次 `reg query` 读出整个 Lxss 键（`/s` 递归到各发行版子键）。
 fn read_lxss_registry() -> Result<String, String> {
-    let out = Command::new(reg_exe())
+    let out = without_console(Command::new(reg_exe()))
         .args(["query", LXSS_KEY, "/s"])
         .stdin(Stdio::null())
         .output()

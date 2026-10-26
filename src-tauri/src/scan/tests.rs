@@ -6401,4 +6401,20 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{66666666-7777-
 
         std::fs::remove_dir_all(repo.parent().unwrap()).ok();
     }
+
+    // Windows 守护：`CREATE_NO_WINDOW` 挂上后命令必须照常能跑。标志位的 getter
+    // 是 unstable 的、断不了值本身，退而求其次验「挂标志不破坏执行」——cfg 分支
+    // 写错编译就红，标志用错这里红。非 Windows 下助手是恒等函数，没有可断言的
+    // 行为，用例整体 cfg 掉（Windows CI 跑 cargo test，正好是唯一该跑的机器）。
+    #[cfg(windows)]
+    #[test]
+    fn without_console_helper_spawns_commands_that_still_run() {
+        let out = crate::scan::without_console(std::process::Command::new("cmd"))
+            .args(["/C", "echo", "ok"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("cmd /C echo 应该能起进程");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+    }
 }

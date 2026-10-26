@@ -11,7 +11,7 @@
 use crate::scan::dirsize;
 use crate::scan::{
     ArtifactEntry, AssetGroup, CleanFailure, CleanPlan, CleanResult, DetailRow, Field, Item,
-    MetricValue, Scanner, Tag, Text, TextArg, clean_fail_text,
+    MetricValue, Scanner, Tag, Text, TextArg, clean_fail_text, without_console,
 };
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -904,9 +904,10 @@ fn collect_repo(path: &Path, is_nested: bool, nested: &HashSet<PathBuf>) -> Repo
 /// 提交后隔一秒跑一次 status，实测 index 的 mtime 就变了；内容不变所以 cmp
 /// 察觉不到）；`GIT_OPTIONAL_LOCKS=0` 让刷新只留在内存。`core.fsmonitor=false`
 /// 防止对开了 fsmonitor 的仓库顺带拉起一个后台守护进程。所有 git 调用都从这
-/// 走，别绕过。
+/// 走，别绕过。经 [`without_console`] 起：git.exe 是控制台程序，不压标志的话
+/// Windows 上每次扫描按仓库数闪黑窗。
 pub(crate) fn git_command(dir: &Path) -> Command {
-    let mut c = Command::new("git");
+    let mut c = without_console(Command::new("git"));
     c.arg("-C")
         .arg(dir)
         .arg("-c")

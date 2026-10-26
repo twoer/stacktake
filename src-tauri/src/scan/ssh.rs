@@ -15,6 +15,7 @@
 
 use crate::scan::{
     AssetGroup, DetailRow, Field, Item, MetricValue, Scanner, Tag, Text, TextArg, field_text,
+    without_console,
 };
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -290,7 +291,7 @@ fn key_metadata(path: &Path, _name: &str, has_pub: bool) -> KeyMeta {
 
 fn ssh_keygen_lf(path: &Path) -> Option<String> {
     let start = SystemTime::now();
-    let out = Command::new("ssh-keygen")
+    let out = without_console(Command::new("ssh-keygen"))
         .arg("-lf")
         .arg(path)
         .stdin(std::process::Stdio::null())

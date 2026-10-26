@@ -21,6 +21,32 @@ pub mod wsl;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::process::Command;
+
+/// 起子进程的统一入口：**压掉 Windows 上闪出的控制台窗口**。
+///
+/// 本体是 GUI 进程（没有控制台）；Windows 上 GUI 进程拉起控制台程序（git / reg /
+/// ssh-keygen / docker…）时，系统会给子进程新建一个控制台——扫描期间闪一下就消失
+/// 的黑窗就是它，子进程一退窗口即关。`CREATE_NO_WINDOW` 让子进程不再领控制台，
+/// 其余行为不变。`CommandExt` 只在 Windows 存在，这里是全仓库唯一的 cfg 分叉点
+/// （macOS 上是恒等函数）；与硬约束 9 不冲突——那条管的是「路径解析做成值」，
+/// 这里是进程 API 的平台差异，没有可注入的口子。
+///
+/// **所有起外部命令的地方都必须过这里**。漏挂不会报任何错，只会在 Windows 上退回
+/// 闪窗——审查 spawn 点时盯一眼。当前四处：`repos::git_command`、
+/// `wsl::read_lxss_registry`，以及未注册保留的 `docker::run`、`ssh::ssh_keygen_lf`。
+pub(crate) fn without_console(c: Command) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut c = c;
+        c.creation_flags(CREATE_NO_WINDOW);
+        c
+    }
+    #[cfg(not(windows))]
+    c
+}
 
 /// 后端下发的展示文案。
 ///
