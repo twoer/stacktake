@@ -110,7 +110,11 @@ use std::path::{Path, PathBuf};
 /// **第十五种：两栏表合并 + goose 进表**（M3，24 → 25）。`EDITOR_SPECS` /
 /// `READ_ONLY_SPECS` 合并为 `PLATFORM_SPECS`（清理开关下放到条目，win 侧补
 /// Option），goose 两条新进——扫描范围变了，同第十三种的理由跳版本。
-pub const SCHEMA_VERSION: u32 = 25;
+///
+/// **第十六种：本机实测缺口五条**（M4，25 → 26）。AI_SPECS +2（Hermes Agent /
+/// Acode）、PLATFORM_SPECS +3（QClaw / OpenClaw AutoClaw / Trae 桌面版），同
+/// 第十三种的理由。
+pub const SCHEMA_VERSION: u32 = 26;
 
 const CACHE_FILE: &str = "scan-cache.json";
 

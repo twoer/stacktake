@@ -362,6 +362,7 @@
   "data.tool.jetbrainsCache": "JetBrains cache",
   "data.tool.deepseekDesktop": "DeepSeek Harness desktop",
   "data.tool.claudeDesktop": "Claude desktop",
+  "data.tool.traeDesktop": "Trae desktop",
   "data.tool.warpConfig": "Warp config",
   "data.tool.warpLocalConfig": "Warp local config",
   "data.tool.zcodeDesktop": "ZCode desktop",

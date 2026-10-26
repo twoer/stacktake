@@ -226,8 +226,12 @@ pub(crate) fn classify(name: &str) -> Category {
 ///
 /// M2（2026-10-26）第二批：Copilot CLI / Droid（Factory）/ Crush / Antigravity，
 /// 同为 dot-dir；核实来源见 `docs/evidence/M2.md`。goose 与 Zed 的 Windows 布局
-/// 与 macOS 不同构，进不了这张单栏表——Zed 在 READ_ONLY_SPECS，goose 留待定表形。
-const AI_SPECS: [(&str, &str); 20] = [
+/// 与 macOS 不同构，进不了这张单栏表——Zed 在 PLATFORM_SPECS，goose 留待定表形。
+///
+/// M4（2026-10-26）：Hermes Agent（`.hermes`，1.1 GB，audio/image 缓存 + logs +
+/// memories）与 Acode（`.acode`）——本机实测目录在、体积可观，五条缺口里能走
+/// 单栏表的两条；其余三条见 PLATFORM_SPECS。
+const AI_SPECS: [(&str, &str); 22] = [
     ("WorkBuddy", ".workbuddy"),
     ("Codex", ".codex"),
     ("Windsurf", ".windsurf"),
@@ -246,6 +250,8 @@ const AI_SPECS: [(&str, &str); 20] = [
     ("Droid", ".factory"),
     ("Crush", ".crush"),
     ("Antigravity", ".antigravity"),
+    ("Hermes Agent", ".hermes"),
+    ("Acode", ".acode"),
     ("opencode", ".local/share/opencode"),
     // opencode 的配置在 XDG 配置目录，数据在数据目录，两个都要看
     ("opencode 配置", ".config/opencode"),
@@ -257,7 +263,7 @@ const AI_SPECS: [(&str, &str); 20] = [
 /// 差别就是那个清理开关，拆两张是历史产物；win 侧补 Option 后，单平台路径显式
 /// 留空即可，不必为凑齐两栏编造路径。顺序即行序，**别重排现有条目**（空间记忆
 /// 会丢）。（硬约束 9：平台是传进来的值，不是 `cfg`。）
-const PLATFORM_SPECS: [(&str, Option<&str>, Option<&str>, bool); 22] = [
+const PLATFORM_SPECS: [(&str, Option<&str>, Option<&str>, bool); 25] = [
     // VS Code 的扩展装在 `~/.vscode/extensions`，与用户数据分开
     ("VS Code 扩展", Some(".vscode"), Some(".vscode"), true),
     (
@@ -306,6 +312,15 @@ const PLATFORM_SPECS: [(&str, Option<&str>, Option<&str>, bool); 22] = [
         false,
     ),
     ("OpenClaw", Some(".openclaw"), Some(".openclaw"), false),
+    // OpenClaw 一族会在 home 下散出多个分身目录（.qclaw 带微信渠道、
+    // .openclaw-autoclaw 是 autoclaw 变体），结构相同、各自独立记账（M4）。
+    ("QClaw", Some(".qclaw"), Some(".qclaw"), false),
+    (
+        "OpenClaw AutoClaw",
+        Some(".openclaw-autoclaw"),
+        Some(".openclaw-autoclaw"),
+        false,
+    ),
     ("ZCode", Some(".zcode"), Some(".zcode"), false),
     (
         "ZCode 桌面版",
@@ -349,6 +364,14 @@ const PLATFORM_SPECS: [(&str, Option<&str>, Option<&str>, bool); 22] = [
         true,
     ),
     ("Goose 数据", Some(".local/share/goose"), None, true),
+    // Trae 桌面版（M4）：`.trae` dot-dir 之外 IDE 本体的 Electron 数据，只统计——
+    // 同 Claude 桌面版先例，先看清数据形状再考虑放开。win 侧按惯例推导待实机核。
+    (
+        "Trae 桌面版",
+        Some("Library/Application Support/Trae"),
+        Some("AppData/Roaming/Trae"),
+        false,
+    ),
 ];
 
 /// 测试专用：把白名单条目交出去，钉「两边平台路径相同」这条注释承诺（M1）。
@@ -509,6 +532,7 @@ fn tool_text(label: &str) -> Text {
         "JetBrains 缓存" => "jetbrainsCache",
         "DeepSeek Harness 桌面版" => "deepseekDesktop",
         "Claude 桌面版" => "claudeDesktop",
+        "Trae 桌面版" => "traeDesktop",
         "Warp 配置" => "warpConfig",
         "Warp 本地配置" => "warpLocalConfig",
         "ZCode 桌面版" => "zcodeDesktop",

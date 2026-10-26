@@ -353,6 +353,7 @@
   "data.tool.jetbrainsCache": "JetBrains キャッシュ",
   "data.tool.deepseekDesktop": "DeepSeek Harness デスクトップ版",
   "data.tool.claudeDesktop": "Claude デスクトップ版",
+  "data.tool.traeDesktop": "Trae デスクトップ版",
   "data.tool.warpConfig": "Warp 設定",
   "data.tool.warpLocalConfig": "Warp ローカル設定",
   "data.tool.zcodeDesktop": "ZCode デスクトップ版",

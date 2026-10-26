@@ -364,6 +364,7 @@
   "data.tool.jetbrainsCache": "Caché de JetBrains",
   "data.tool.deepseekDesktop": "Escritorio de DeepSeek Harness",
   "data.tool.claudeDesktop": "Escritorio de Claude",
+  "data.tool.traeDesktop": "Escritorio de Trae",
   "data.tool.warpConfig": "Configuración de Warp",
   "data.tool.warpLocalConfig": "Configuración local de Warp",
   "data.tool.zcodeDesktop": "Escritorio de ZCode",
